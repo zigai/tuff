@@ -1,0 +1,58 @@
+name: Tuff
+
+on:
+  pull_request:
+    paths:
+      - "crates/ruff/Cargo.toml"
+      - "crates/ruff/src/args.rs"
+      - "crates/ruff/src/commands/format.rs"
+      - "crates/ruff/src/commands/version.rs"
+      - "crates/ruff/src/lib.rs"
+      - "crates/ruff/src/main.rs"
+      - "crates/ruff/src/tuff.rs"
+      - "crates/ruff/src/tuff/**"
+      - "crates/ruff/tests/tuff_cli.rs"
+      - "crates/tuff_python_formatter/**"
+      - "docs/**"
+      - "UPSTREAM_PATCHES.md"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/tuff.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/ruff/Cargo.toml"
+      - "crates/ruff/src/args.rs"
+      - "crates/ruff/src/commands/format.rs"
+      - "crates/ruff/src/commands/version.rs"
+      - "crates/ruff/src/lib.rs"
+      - "crates/ruff/src/main.rs"
+      - "crates/ruff/src/tuff.rs"
+      - "crates/ruff/src/tuff/**"
+      - "crates/ruff/tests/tuff_cli.rs"
+      - "crates/tuff_python_formatter/**"
+      - "docs/**"
+      - "UPSTREAM_PATCHES.md"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/tuff.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
