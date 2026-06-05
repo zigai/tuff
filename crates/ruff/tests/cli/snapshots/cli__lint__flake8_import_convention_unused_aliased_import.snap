@@ -1,7 +1,7 @@
 ---
 source: crates/ruff/tests/cli/lint.rs
 info:
-  program: ruff
+  program: tuff
   args:
     - check
     - "--no-cache"
@@ -23,7 +23,7 @@ exit_code: 2
 ----- stdout -----
 
 ----- stderr -----
-ruff failed
+tuff failed
   Cause: Required import specified in `lint.isort.required-imports` (I002) conflicts with the required import alias specified in either `lint.flake8-import-conventions.aliases` or `lint.flake8-import-conventions.extend-aliases` (ICN001):
     - `pandas` -> `pd`
 

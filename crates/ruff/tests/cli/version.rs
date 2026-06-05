@@ -10,7 +10,7 @@ fn version_basics() -> anyhow::Result<()> {
     success: true
     exit_code: 0
     ----- stdout -----
-    ruff [VERSION]
+    tuff [VERSION]
 
     ----- stderr -----
     "
@@ -35,7 +35,7 @@ fn config_option_allowed_but_ignored() -> anyhow::Result<()> {
     success: true
     exit_code: 0
     ----- stdout -----
-    ruff [VERSION]
+    tuff [VERSION]
 
     ----- stderr -----
     "
@@ -84,7 +84,7 @@ fn isolated_option_allowed() -> anyhow::Result<()> {
     success: true
     exit_code: 0
     ----- stdout -----
-    ruff [VERSION]
+    tuff [VERSION]
 
     ----- stderr -----
     "

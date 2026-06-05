@@ -1,7 +1,7 @@
 ---
 source: crates/ruff/tests/cli/lint.rs
 info:
-  program: ruff
+  program: tuff
   args:
     - check
     - "--no-cache"
@@ -19,7 +19,7 @@ exit_code: 2
 ----- stdout -----
 
 ----- stderr -----
-ruff failed
+tuff failed
   Cause: Required import `from collections.abc import Set` specified in `lint.isort.required-imports` (I002) conflicts with `unaliased-collections-abc-set-import` (PYI025), which requires this import to be aliased as `AbstractSet`.
 
 Help: Either alias the required import (`from collections.abc import Set as AbstractSet`), or disable PYI025.
