@@ -2,6 +2,27 @@
 
 This repository contains both Ruff (a Python linter and formatter) and ty (a Python type checker). The crates follow a naming convention: `ruff_*` for Ruff-specific code and `ty_*` for ty-specific code. ty reuses several Ruff crates, including the Python parser (`ruff_python_parser`) and AST definitions (`ruff_python_ast`).
 
+## Tuff Fork
+
+Tuff is this workspace's Python formatter fork. Keep Ruff's parser, AST, trivia, text-size, diagnostics, and generic `ruff_formatter` printer crates aligned with upstream Ruff wherever possible.
+
+Product-specific formatting behavior belongs in `crates/tuff_python_formatter`. The user-facing binary is `tuff`, built from the `crates/ruff` package.
+
+Defaults must stay Ruff-compatible. Custom formatting behavior must be disabled unless explicitly enabled through `TuffCustomOptions` or `[tool.tuff]` configuration.
+
+See `docs/architecture.md` for the Tuff fork boundary, formatter flow, and upstream vendoring rules.
+
+The active formatter work includes:
+
+- default Ruff compatibility tests
+- grouped custom formatter options
+- per-file layout planning
+- hook-based custom formatting behavior
+- class field alignment
+- function parameter alignment
+- list, dict, tuple, and set collection layout policy
+- the `tuff format` CLI
+
 ## Running Tests
 
 Run all tests (setting `CARGO_PROFILE_DEV_OPT_LEVEL=1 CARGO_PROFILE_DEV_DEBUG="line-tables-only"` to enable optimizations while retaining some debug info, and setting `INSTA_FORCE_PASS=1 INSTA_UPDATE=always MDTEST_UPDATE_SNAPSHOTS=1` to ensure all snapshots are updated):
@@ -42,10 +63,10 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 Use debug builds (not `--release`) when developing, as release builds lack debug assertions and have slower compile times.
 
-Run Ruff:
+Run Tuff:
 
 ```sh
-cargo run --bin ruff -- check path/to/file.py
+cargo run --bin tuff -- check path/to/file.py
 ```
 
 Run ty:

@@ -345,7 +345,7 @@ formatting `.pyi` files, but would continue to include them in linting:
 By default, Ruff will also skip any files that are omitted via `.ignore`, `.gitignore`,
 `.git/info/exclude`, and global `gitignore` files (see: [`respect-gitignore`](settings.md#respect-gitignore)).
 
-Files that are passed to `ruff` directly are always analyzed, regardless of the above criteria, 
+Files that are passed to `ruff` directly are always analyzed, regardless of the above criteria,
 unless [`force-exclude`](settings.md#force-exclude) is also enabled (via CLI or settings file).
 For example, without `force-exclude` enabled, `ruff check /path/to/excluded/file.py` will always lint `file.py`.
 
@@ -523,20 +523,20 @@ See `ruff help` for the full list of Ruff's top-level commands:
 <!-- Begin auto-generated command help. -->
 
 ```text
-Ruff: An extremely fast Python linter and code formatter.
+Tuff: an extremely fast Python linter and code formatter.
 
-Usage: ruff [OPTIONS] <COMMAND>
+Usage: tuff [OPTIONS] <COMMAND>
 
 Commands:
-  check    Run Ruff on the given files or directories
+  check    Run Tuff on the given files or directories
   rule     Explain a rule (or all rules)
   config   List or describe the available configuration options
   linter   List all supported upstream linters
   clean    Clear any caches in the current directory and any subdirectories
-  format   Run the Ruff formatter on the given files or directories
+  format   Run the Tuff formatter on the given files or directories
   server   Run the language server
   analyze  Run analysis over Python source code
-  version  Display Ruff's version
+  version  Display Tuff's version
   help     Print this message or the help of the given subcommand(s)
 
 Options:
@@ -565,7 +565,7 @@ Global options:
           Control when colored output is used [possible values: auto, always,
           never]
 
-For help with a specific command, see: `ruff help <command>`.
+For help with a specific command, see: `tuff help <command>`.
 ```
 
 <!-- End auto-generated command help. -->
@@ -575,9 +575,9 @@ Or `ruff help check` for more on the linting command:
 <!-- Begin auto-generated check help. -->
 
 ```text
-Run Ruff on the given files or directories
+Run Tuff on the given files or directories
 
-Usage: ruff check [OPTIONS] [FILES]...
+Usage: tuff check [OPTIONS] [FILES]...
 
 Arguments:
   [FILES]...  List of files or directories to check, or `-` to read from stdin
@@ -716,9 +716,9 @@ Or `ruff help format` for more on the formatting command:
 <!-- Begin auto-generated format help. -->
 
 ```text
-Run the Ruff formatter on the given files or directories
+Run the Tuff formatter on the given files or directories
 
-Usage: ruff format [OPTIONS] [FILES]...
+Usage: tuff format [OPTIONS] [FILES]...
 
 Arguments:
   [FILES]...  List of files or directories to format, or `-` to read from stdin
@@ -853,3 +853,67 @@ To enable shell autocompletion for Ruff, run one of the following:
     ```
 
 Then restart the shell or source the shell config file.
+
+# Tuff Configuration
+
+Tuff uses Ruff's CLI and standard configuration model. Put regular Ruff settings such as `line-length`, `target-version`, `include`, `exclude`, and `[tool.ruff.format]` under `[tool.ruff]` as usual.
+
+Tuff-specific formatter extensions live under `[tool.tuff.format]` in `pyproject.toml`, or under `[format]` in `tuff.toml` / `.tuff.toml`.
+
+Example:
+
+```toml
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+include = ["*.py", "*.pyi"]
+exclude = [".venv", "build"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.tuff.format.alignment]
+class-fields = "enabled"
+class-field-scope = "dataclasses-and-pydantic"
+function-params = "enabled"
+function-param-scope = "class-init"
+align-defaults = true
+assignments = "enabled"
+assignment-scope = "class"
+dict-values = "enabled"
+call-keyword-args = "enabled"
+import-aliases = "enabled"
+min-group-size = 2
+break-on-blank-line = true
+break-on-leading-comment = true
+break-on-trailing-comment = false
+
+[tool.tuff.format.collections]
+lists = { layout = "expand-if-more-than", threshold = 3 }
+dicts = { layout = "force-expanded" }
+tuples = { layout = "ruff-default" }
+sets = { layout = "ruff-default" }
+
+[tool.tuff.format.one-line-suites]
+mode = "enabled"
+clauses = ["if"]
+statements = ["return", "call"]
+
+[tool.tuff.format.docstrings]
+args-sections = "enabled"
+```
+
+Precedence:
+
+1. Ruff CLI flags and `--config KEY=VALUE` overrides for standard Ruff settings.
+2. Ruff configuration from `[tool.ruff]`, `[tool.ruff.format]`, `ruff.toml`, or `.ruff.toml`.
+3. Tuff extension options from discovered `[tool.tuff.format]`, `tuff.toml`, or `.tuff.toml`.
+4. Built-in defaults.
+
+Unknown tuff fields are errors.
+
+See `docs/custom-formatting-options.md` for examples and option details.
+
+Directory formatting uses Ruff's `include` and `exclude` settings during traversal.
+
+The CLI does not descend into symlinked directories during directory traversal. In-place file writes use a temporary file in the target directory and preserve the existing file permissions before replacing the original path.
