@@ -258,11 +258,8 @@ impl Cache {
     pub(crate) fn get(&self, path: &RelativePath, key: &FileCacheKey) -> Option<&FileCache> {
         let file = self.package.files.get(path)?;
 
-        let mut hasher = CacheKeyHasher::new();
-        key.cache_key(&mut hasher);
-
         // Make sure the file hasn't changed since the cached run.
-        if file.key != hasher.finish() {
+        if file.key != hash_cache_key(key) {
             return None;
         }
 
@@ -271,19 +268,23 @@ impl Cache {
         Some(file)
     }
 
-    pub(crate) fn is_formatted(&self, path: &RelativePath, key: &FileCacheKey) -> bool {
-        self.get(path, key)
-            .is_some_and(|entry| entry.data.formatted)
+    pub(crate) fn is_formatted(
+        &self,
+        path: &RelativePath,
+        key: &FileCacheKey,
+        format_extra_key: &impl CacheKey,
+    ) -> bool {
+        self.get(path, key).is_some_and(|entry| {
+            entry.data.formatted
+                && entry.data.format_extra_key == Some(hash_cache_key(format_extra_key))
+        })
     }
 
     /// Add or update a file cache at `path` relative to the package root.
     fn update(&self, path: RelativePathBuf, key: &FileCacheKey, data: ChangeData) {
-        let mut hasher = CacheKeyHasher::new();
-        key.cache_key(&mut hasher);
-
         self.changes.lock().unwrap().push(Change {
             path,
-            new_key: hasher.finish(),
+            new_key: hash_cache_key(key),
             new_data: data,
         });
     }
@@ -292,9 +293,24 @@ impl Cache {
         self.update(path, key, ChangeData::Linted(yes));
     }
 
-    pub(crate) fn set_formatted(&self, path: RelativePathBuf, key: &FileCacheKey) {
-        self.update(path, key, ChangeData::Formatted);
+    pub(crate) fn set_formatted(
+        &self,
+        path: RelativePathBuf,
+        key: &FileCacheKey,
+        format_extra_key: &impl CacheKey,
+    ) {
+        self.update(
+            path,
+            key,
+            ChangeData::Formatted(hash_cache_key(format_extra_key)),
+        );
     }
+}
+
+fn hash_cache_key(key: &impl CacheKey) -> u64 {
+    let mut hasher = CacheKeyHasher::new();
+    key.cache_key(&mut hasher);
+    hasher.finish()
 }
 
 /// Return a [`NamedTempFile`] in the specified directory.
@@ -353,6 +369,7 @@ impl FileCache {
 struct FileCacheData {
     linted: bool,
     formatted: bool,
+    format_extra_key: Option<u64>,
 }
 
 /// Returns a hash key based on the `package_root`, `settings` and the crate
@@ -475,7 +492,7 @@ struct Change {
 #[derive(Debug)]
 enum ChangeData {
     Linted(bool),
-    Formatted,
+    Formatted(u64),
 }
 
 impl ChangeData {
@@ -484,8 +501,9 @@ impl ChangeData {
             ChangeData::Linted(yes) => {
                 data.linted = yes;
             }
-            ChangeData::Formatted => {
+            ChangeData::Formatted(format_extra_key) => {
                 data.formatted = true;
+                data.format_extra_key = Some(format_extra_key);
             }
         }
     }
@@ -951,6 +969,70 @@ mod tests {
 
         assert!(file_cache.data.linted);
         assert!(file_cache.data.formatted);
+    }
+
+    #[test]
+    fn tuff_config_changes_invalidate_format_cache() {
+        let source: &[u8] = b"class User:\n    id: int\n    display_name: str\n";
+
+        let test_cache = TestCache::new("tuff_config_changes_invalidate_format_cache");
+        let cache = test_cache.open();
+        let source_path = test_cache.write_source_file("source.py", source);
+
+        let result = test_cache
+            .format_file_with_cache("source.py", &cache)
+            .expect("Failed to format test file");
+        assert!(matches!(result, FormatResult::Unchanged));
+
+        cache.persist().unwrap();
+        fs::write(
+            test_cache.package_root.join("pyproject.toml"),
+            r#"
+[tool.tuff.format.alignment]
+class-fields = "enabled"
+"#,
+        )
+        .unwrap();
+
+        let cache = test_cache.open();
+        let result = test_cache
+            .format_file_with_cache("source.py", &cache)
+            .expect("Failed to format test file");
+
+        assert!(matches!(result, FormatResult::Formatted));
+        assert_eq!(
+            fs::read_to_string(source_path).unwrap(),
+            "class User:\n    id:           int\n    display_name: str\n"
+        );
+    }
+
+    #[test]
+    fn cached_format_still_reports_tuff_config_errors() {
+        let source: &[u8] = b"class User:\n    id: int\n";
+
+        let test_cache = TestCache::new("cached_format_still_reports_tuff_config_errors");
+        let cache = test_cache.open();
+        test_cache.write_source_file("source.py", source);
+
+        let result = test_cache
+            .format_file_with_cache("source.py", &cache)
+            .expect("Failed to format test file");
+        assert!(matches!(result, FormatResult::Unchanged));
+
+        cache.persist().unwrap();
+        fs::write(
+            test_cache.package_root.join("pyproject.toml"),
+            r#"
+[tool.tuff.format]
+unknown = true
+"#,
+        )
+        .unwrap();
+
+        let cache = test_cache.open();
+        let result = test_cache.format_file_with_cache("source.py", &cache);
+
+        assert!(matches!(result, Err(FormatCommandError::TuffConfig(_, _))));
     }
 
     #[test]

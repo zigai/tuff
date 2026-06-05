@@ -114,9 +114,9 @@ const STYLES: Styles = Styles::styled()
 #[derive(Debug, Parser)]
 #[command(
     author,
-    name = "ruff",
-    about = "Ruff: An extremely fast Python linter and code formatter.",
-    after_help = "For help with a specific command, see: `ruff help <command>`."
+    name = "tuff",
+    about = "Tuff: an extremely fast Python linter and code formatter.",
+    after_help = "For help with a specific command, see: `tuff help <command>`."
 )]
 #[command(version)]
 #[command(styles = STYLES)]
@@ -130,7 +130,7 @@ pub struct Args {
 #[expect(clippy::large_enum_variant)]
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
-    /// Run Ruff on the given files or directories.
+    /// Run Tuff on the given files or directories.
     Check(CheckCommand),
     /// Explain a rule (or all rules).
     #[command(group = clap::ArgGroup::new("selector").multiple(false).required(true))]
@@ -170,14 +170,14 @@ pub enum Command {
     /// Generate shell completion.
     #[clap(hide = true)]
     GenerateShellCompletion { shell: clap_complete_command::Shell },
-    /// Run the Ruff formatter on the given files or directories.
+    /// Run the Tuff formatter on the given files or directories.
     Format(FormatCommand),
     /// Run the language server.
     Server(ServerCommand),
     /// Run analysis over Python source code.
     #[clap(subcommand)]
     Analyze(AnalyzeCommand),
-    /// Display Ruff's version
+    /// Display Tuff's version
     Version {
         #[arg(long, value_enum, default_value = "text")]
         output_format: HelpFormat,

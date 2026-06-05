@@ -2654,40 +2654,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pyfmt_python_formatter"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "clap",
- "countme",
- "datatest-stable",
- "insta",
- "itertools 0.14.0",
- "memchr",
- "regex",
- "ruff_cache",
- "ruff_db",
- "ruff_formatter",
- "ruff_macros",
- "ruff_python_ast",
- "ruff_python_formatter",
- "ruff_python_parser",
- "ruff_python_trivia",
- "ruff_source_file",
- "ruff_text_size",
- "rustc-hash",
- "salsa",
- "schemars",
- "serde",
- "serde_json",
- "similar 3.1.0",
- "smallvec",
- "static_assertions",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
 name = "pyproject-toml"
 version = "0.13.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2966,6 +2932,7 @@ dependencies = [
  "colored 3.1.1",
  "dunce",
  "filetime",
+ "globset",
  "globwalk",
  "ignore",
  "indexmap",
@@ -2984,6 +2951,7 @@ dependencies = [
  "ruff_cache",
  "ruff_db",
  "ruff_diagnostics",
+ "ruff_formatter",
  "ruff_graph",
  "ruff_linter",
  "ruff_macros",
@@ -3002,6 +2970,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shellexpand",
+ "similar 3.1.0",
  "strum",
  "tempfile",
  "test-case",
@@ -3009,6 +2978,7 @@ dependencies = [
  "tikv-jemallocator",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
+ "tuff_python_formatter",
  "walkdir",
  "wild",
 ]
@@ -4490,6 +4460,41 @@ dependencies = [
  "ignore",
  "libtest-mimic 0.7.3",
  "snapbox",
+]
+
+[[package]]
+name = "tuff_python_formatter"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "countme",
+ "datatest-stable",
+ "insta",
+ "itertools 0.14.0",
+ "memchr",
+ "regex",
+ "ruff_cache",
+ "ruff_db",
+ "ruff_formatter",
+ "ruff_macros",
+ "ruff_python_ast",
+ "ruff_python_formatter",
+ "ruff_python_parser",
+ "ruff_python_trivia",
+ "ruff_source_file",
+ "ruff_text_size",
+ "rustc-hash",
+ "salsa",
+ "schemars",
+ "serde",
+ "serde_json",
+ "similar 3.1.0",
+ "smallvec",
+ "static_assertions",
+ "thiserror 2.0.18",
+ "tracing",
+ "unicode-width",
 ]
 
 [[package]]

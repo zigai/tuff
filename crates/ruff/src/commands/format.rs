@@ -32,17 +32,22 @@ use ruff_linter::registry::Rule;
 use ruff_linter::rules::flake8_quotes::settings::Quote;
 use ruff_linter::source_kind::{SourceError, SourceKind};
 use ruff_linter::warn_user_once;
-use ruff_python_ast::{PySourceType, SourceType};
-use ruff_python_formatter::{FormatModuleError, QuoteStyle, format_module_source, format_range};
+use ruff_python_ast::SourceType;
+use ruff_python_formatter::QuoteStyle;
 use ruff_source_file::{LineIndex, LineRanges, OneIndexed, SourceFileBuilder};
 use ruff_text_size::{TextLen, TextRange, TextSize};
 use ruff_workspace::FormatterSettings;
 use ruff_workspace::resolver::{
     PyprojectConfig, ResolvedFile, Resolver, match_exclusion, project_files_in_path,
 };
+use tuff_python_formatter::{FormatModuleError, TuffCustomOptions};
 
 use crate::args::{ConfigArguments, FormatArguments, FormatRange};
 use crate::cache::{Cache, FileCacheKey, PackageCacheMap, PackageCaches};
+use crate::tuff::format::{
+    FormatCacheKey, custom_options_for_source_kind, custom_options_for_source_type,
+    format_notebook_cell, format_python_range, format_python_source,
+};
 use crate::{ExitStatus, resolve_default_files};
 
 #[derive(Debug, Copy, Clone, is_macro::Is)]
@@ -264,13 +269,17 @@ pub(crate) fn format_path(
     range: Option<FormatRange>,
     cache: Option<&Cache>,
 ) -> Result<FormatResult, FormatCommandError> {
+    let tuff_custom_options = custom_options_for_source_type(source_type, path)
+        .map_err(|err| FormatCommandError::TuffConfig(Some(path.to_path_buf()), err))?;
+
     if let Some(cache) = cache {
         let relative_path = cache
             .relative_path(path)
             .expect("wrong package cache for file");
 
         if let Ok(cache_key) = FileCacheKey::from_path(path) {
-            if cache.is_formatted(relative_path, &cache_key) {
+            let format_extra_key = FormatCacheKey::new(&tuff_custom_options);
+            if cache.is_formatted(relative_path, &cache_key, &format_extra_key) {
                 return Ok(FormatResult::Unchanged);
             }
         }
@@ -290,7 +299,13 @@ pub(crate) fn format_path(
     let cache = cache.filter(|_| range.is_none());
 
     // Format the source.
-    let format_result = match format_source(&unformatted, Some(path), settings, range)? {
+    let format_result = match format_source_with_custom_options(
+        &unformatted,
+        Some(path),
+        settings,
+        range,
+        &tuff_custom_options,
+    )? {
         FormattedSource::Formatted(formatted) => match mode {
             FormatMode::Write => {
                 let mut writer = File::create(path).map_err(|err| {
@@ -302,10 +317,15 @@ pub(crate) fn format_path(
 
                 if let Some(cache) = cache {
                     if let Ok(cache_key) = FileCacheKey::from_path(path) {
+                        let format_extra_key = FormatCacheKey::new(&tuff_custom_options);
                         let relative_path = cache
                             .relative_path(path)
                             .expect("wrong package cache for file");
-                        cache.set_formatted(relative_path.to_path_buf(), &cache_key);
+                        cache.set_formatted(
+                            relative_path.to_path_buf(),
+                            &cache_key,
+                            &format_extra_key,
+                        );
                     }
                 }
 
@@ -319,10 +339,11 @@ pub(crate) fn format_path(
         FormattedSource::Unchanged => {
             if let Some(cache) = cache {
                 if let Ok(cache_key) = FileCacheKey::from_path(path) {
+                    let format_extra_key = FormatCacheKey::new(&tuff_custom_options);
                     let relative_path = cache
                         .relative_path(path)
                         .expect("wrong package cache for file");
-                    cache.set_formatted(relative_path.to_path_buf(), &cache_key);
+                    cache.set_formatted(relative_path.to_path_buf(), &cache_key, &format_extra_key);
                 }
             }
 
@@ -358,30 +379,53 @@ pub(crate) fn format_source(
     settings: &FormatterSettings,
     range: Option<FormatRange>,
 ) -> Result<FormattedSource, FormatCommandError> {
+    let tuff_custom_options = custom_options_for_source_kind(source_kind, path)
+        .map_err(|err| FormatCommandError::TuffConfig(path.map(Path::to_path_buf), err))?;
+    format_source_with_custom_options(source_kind, path, settings, range, &tuff_custom_options)
+}
+
+fn format_source_with_custom_options(
+    source_kind: &SourceKind,
+    path: Option<&Path>,
+    settings: &FormatterSettings,
+    range: Option<FormatRange>,
+    tuff_custom_options: &TuffCustomOptions,
+) -> Result<FormattedSource, FormatCommandError> {
     match &source_kind {
         SourceKind::Python {
             code: unformatted,
             is_stub,
         } => {
             let py_source_type = source_kind.py_source_type();
-            let options = settings.to_format_options(py_source_type, unformatted, path);
 
             let formatted = if let Some(range) = range {
                 let line_index = LineIndex::from_source_text(unformatted);
                 let byte_range = range.to_text_range(unformatted, &line_index);
-                format_range(unformatted, byte_range, options).map(|formatted_range| {
+                format_python_range(
+                    unformatted,
+                    byte_range,
+                    py_source_type,
+                    settings,
+                    path,
+                    tuff_custom_options.clone(),
+                )
+                .map(|formatted_range| {
                     let mut formatted = unformatted.clone();
                     formatted.replace_range(
                         std::ops::Range::<usize>::from(formatted_range.source_range()),
-                        formatted_range.as_code(),
+                        formatted_range.code(),
                     );
 
                     formatted
                 })
             } else {
-                // Using `Printed::into_code` requires adding `ruff_formatter` as a direct dependency, and I suspect that Rust can optimize the closure away regardless.
-                #[expect(clippy::redundant_closure_for_method_calls)]
-                format_module_source(unformatted, options).map(|formatted| formatted.into_code())
+                format_python_source(
+                    unformatted,
+                    py_source_type,
+                    settings,
+                    path,
+                    tuff_custom_options.clone(),
+                )
             };
 
             let formatted = formatted.map_err(|err| {
@@ -417,9 +461,6 @@ pub(crate) fn format_source(
                 ));
             }
 
-            let options =
-                settings.to_format_options(PySourceType::Ipynb, notebook.source_code(), path);
-
             let mut output: Option<String> = None;
             let mut last: Option<TextSize> = None;
             let mut source_map = SourceMap::default();
@@ -430,26 +471,31 @@ pub(crate) fn format_source(
                 let unformatted = &notebook.source_code()[range];
 
                 // Format the cell.
-                let formatted =
-                    format_module_source(unformatted, options.clone()).map_err(|err| {
-                        if let FormatModuleError::ParseError(err) = err {
-                            // Offset the error by the start of the cell
-                            DisplayParseError::from_source_kind(
-                                ParseError {
-                                    error: err.error,
-                                    location: err.location.checked_add(*start).unwrap(),
-                                },
-                                path.map(Path::to_path_buf),
-                                source_kind,
-                            )
-                            .into()
-                        } else {
-                            FormatCommandError::Format(path.map(Path::to_path_buf), err)
-                        }
-                    })?;
+                let formatted = format_notebook_cell(
+                    notebook,
+                    range,
+                    settings,
+                    path,
+                    tuff_custom_options.clone(),
+                )
+                .map_err(|err| {
+                    if let FormatModuleError::ParseError(err) = err {
+                        // Offset the error by the start of the cell
+                        DisplayParseError::from_source_kind(
+                            ParseError {
+                                error: err.error,
+                                location: err.location.checked_add(*start).unwrap(),
+                            },
+                            path.map(Path::to_path_buf),
+                            source_kind,
+                        )
+                        .into()
+                    } else {
+                        FormatCommandError::Format(path.map(Path::to_path_buf), err)
+                    }
+                })?;
 
                 // If the cell is unchanged, skip it.
-                let formatted = formatted.as_code();
                 if formatted.len() == unformatted.len() && formatted == unformatted {
                     continue;
                 }
@@ -467,7 +513,7 @@ pub(crate) fn format_source(
                 source_map.push_marker(*start, output.text_len());
 
                 // Add the cell itself.
-                output.push_str(formatted);
+                output.push_str(&formatted);
 
                 // Add the end source marker for the added cell.
                 source_map.push_marker(*end, output.text_len());
@@ -853,6 +899,7 @@ pub(crate) enum FormatCommandError {
     Panic(Option<PathBuf>, Box<PanicError>),
     Read(Option<PathBuf>, SourceError),
     Format(Option<PathBuf>, FormatModuleError),
+    TuffConfig(Option<PathBuf>, anyhow::Error),
     Write(Option<PathBuf>, SourceError),
     RangeFormatNotSupported(Option<PathBuf>),
     MarkdownExperimental(Option<PathBuf>),
@@ -872,6 +919,7 @@ impl FormatCommandError {
             Self::Panic(path, _)
             | Self::Read(path, _)
             | Self::Format(path, _)
+            | Self::TuffConfig(path, _)
             | Self::Write(path, _)
             | Self::RangeFormatNotSupported(path)
             | Self::MarkdownExperimental(path) => path.as_deref(),
@@ -906,6 +954,9 @@ impl From<&FormatCommandError> for Diagnostic {
                 Diagnostic::new(DiagnosticId::Io, Severity::Error, source_error)
             }
             FormatCommandError::Format(_, format_module_error) => format_module_error.into(),
+            FormatCommandError::TuffConfig(_, error) => {
+                Diagnostic::new(DiagnosticId::InvalidCliOption, Severity::Error, error)
+            }
             FormatCommandError::RangeFormatNotSupported(_) => Diagnostic::new(
                 DiagnosticId::InvalidCliOption,
                 Severity::Error,
@@ -991,6 +1042,23 @@ impl Display for FormatCommandError {
                     )
                 } else {
                     write!(f, "{header} {err}", header = "Failed to format:".bold())
+                }
+            }
+            Self::TuffConfig(path, err) => {
+                if let Some(path) = path {
+                    write!(
+                        f,
+                        "{}{}{} {err}",
+                        "Failed to load tuff config for ".bold(),
+                        fs::relativize_path(path).bold(),
+                        ":".bold()
+                    )
+                } else {
+                    write!(
+                        f,
+                        "{header} {err}",
+                        header = "Failed to load tuff config:".bold()
+                    )
                 }
             }
             Self::RangeFormatNotSupported(path) => {
@@ -1286,10 +1354,10 @@ mod tests {
     use ruff_db::panic::catch_unwind;
     use ruff_linter::logging::DisplayParseError;
     use ruff_linter::source_kind::{SourceError, SourceKind};
-    use ruff_python_formatter::FormatModuleError;
     use ruff_python_parser::{ParseError, ParseErrorType};
     use ruff_text_size::{TextRange, TextSize};
     use test_case::test_case;
+    use tuff_python_formatter::FormatModuleError;
 
     use crate::commands::format::{FormatCommandError, FormatMode, FormatResults, ModifiedRange};
 

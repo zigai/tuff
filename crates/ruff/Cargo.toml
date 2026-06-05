@@ -10,7 +10,7 @@ documentation = { workspace = true }
 repository = { workspace = true }
 license = { workspace = true }
 readme = "../../README.md"
-default-run = "ruff"
+default-run = "tuff"
 
 [package.metadata.cargo-shear]
 # Used via macro expansion.
@@ -23,6 +23,7 @@ dist = true
 ruff_cache = { workspace = true }
 ruff_db = { workspace = true, default-features = false, features = ["os"] }
 ruff_diagnostics = { workspace = true }
+ruff_formatter = { workspace = true }
 ruff_graph = { workspace = true, features = ["serde", "clap"] }
 ruff_linter = { workspace = true, features = ["clap"] }
 ruff_macros = { workspace = true }
@@ -31,6 +32,7 @@ ruff_notebook = { workspace = true }
 ruff_options_metadata = { workspace = true, features = ["serde"] }
 ruff_python_ast = { workspace = true }
 ruff_python_formatter = { workspace = true }
+tuff_python_formatter = { workspace = true }
 ruff_python_parser = { workspace = true }
 ruff_server = { workspace = true }
 ruff_source_file = { workspace = true }
@@ -48,6 +50,7 @@ clearscreen = { workspace = true }
 colored = { workspace = true }
 filetime = { workspace = true }
 globwalk = { workspace = true }
+globset = { workspace = true }
 ignore = { workspace = true }
 indexmap = { workspace = true }
 is-macro = { workspace = true }
@@ -62,6 +65,7 @@ rustc-hash = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 shellexpand = { workspace = true }
+similar = { workspace = true }
 strum = { workspace = true, features = [] }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
@@ -96,3 +100,7 @@ workspace = true
 
 [lib]
 doctest = false
+
+[[bin]]
+name = "tuff"
+path = "src/main.rs"

@@ -32,6 +32,7 @@ mod diagnostics;
 mod printer;
 pub mod resolve;
 mod stdin;
+mod tuff;
 mod version;
 
 #[derive(Copy, Clone)]

@@ -1,0 +1,21 @@
+---
+source: crates/tuff_python_formatter/src/comments/mod.rs
+expression: comments.debug(test_case.source_code)
+---
+{
+    Node {
+        kind: StmtWhile,
+        range: 0..54,
+        source: `while True:⏎`,
+    }: {
+        "leading": [],
+        "dangling": [
+            SourceComment {
+                text: "# trailing comment",
+                position: EndOfLine,
+                formatted: false,
+            },
+        ],
+        "trailing": [],
+    },
+}

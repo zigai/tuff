@@ -1,0 +1,106 @@
+use ruff_formatter::write;
+use ruff_python_ast::StmtAnnAssign;
+
+use crate::custom::hooks::{self, AnnotationSubject, AssignmentSubject};
+use crate::expression::is_splittable_expression;
+use crate::expression::parentheses::{NeedsParentheses, OptionalParentheses, Parentheses};
+use crate::prelude::*;
+use crate::statement::stmt_assign::{
+    AnyAssignmentOperator, AnyBeforeOperator, FormatStatementsLastExpression,
+};
+use crate::statement::trailing_semicolon;
+
+#[derive(Default)]
+pub struct FormatStmtAnnAssign;
+
+impl FormatNodeRule<StmtAnnAssign> for FormatStmtAnnAssign {
+    fn fmt_fields(&self, item: &StmtAnnAssign, f: &mut PyFormatter) -> FormatResult<()> {
+        let StmtAnnAssign {
+            range: _,
+            node_index: _,
+            target,
+            annotation,
+            value,
+            simple: _,
+        } = item;
+        let comments = f.context().comments().clone();
+        let annotation_parentheses = annotation
+            .as_ref()
+            .needs_parentheses(item.into(), f.context());
+
+        write!(f, [target.format(), token(":")])?;
+        hooks::after_annotation_colon(f, AnnotationSubject::ClassField(item))?;
+        space().fmt(f)?;
+
+        if let Some(value) = value {
+            let align_default = f
+                .context()
+                .custom_layout()
+                .alignment
+                .class_field_defaults
+                .contains_key(&item.range);
+
+            if !align_default
+                && annotation_parentheses != OptionalParentheses::Always
+                && is_splittable_expression(annotation, f.context())
+            {
+                FormatStatementsLastExpression::RightToLeft {
+                    before_operator: AnyBeforeOperator::Expression(annotation),
+                    operator: AnyAssignmentOperator::Assign,
+                    value,
+                    statement: item.into(),
+                }
+                .fmt(f)?;
+            } else {
+                // Remove unnecessary parentheses around the annotation if the parenthesize long type hints preview style is enabled.
+                // Ensure we keep the parentheses if the annotation has any comments.
+                let parentheses = if comments.has_leading(annotation.as_ref())
+                    || comments.has_trailing(annotation.as_ref())
+                    || annotation_parentheses == OptionalParentheses::Always
+                {
+                    Parentheses::Always
+                } else {
+                    Parentheses::Never
+                };
+
+                annotation.format().with_options(parentheses).fmt(f)?;
+
+                space().fmt(f)?;
+                hooks::before_assignment_operator(f, AssignmentSubject::AnnotatedAssignment(item))?;
+                write!(
+                    f,
+                    [
+                        token("="),
+                        space(),
+                        FormatStatementsLastExpression::left_to_right(value, item)
+                    ]
+                )?;
+            }
+        } else if annotation_parentheses == OptionalParentheses::Always {
+            annotation
+                .format()
+                .with_options(Parentheses::Always)
+                .fmt(f)?;
+        } else {
+            // Parenthesize the value and inline the comment if it is a "simple" type annotation, similar
+            // to what we do with the value.
+            // ```python
+            // class Test:
+            //     safe_age: (
+            //         Decimal  #  the user's age, used to determine if it's safe for them to use ruff
+            //     )
+            // ```
+            FormatStatementsLastExpression::left_to_right(annotation, item).fmt(f)?;
+        }
+
+        if f.options().source_type().is_ipynb()
+            && f.context().node_level().is_last_top_level_statement()
+            && target.is_name_expr()
+            && trailing_semicolon(item.into(), f.context().source()).is_some()
+        {
+            token(";").fmt(f)?;
+        }
+
+        Ok(())
+    }
+}
