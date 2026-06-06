@@ -65,6 +65,25 @@ impl AlignmentMode {
     }
 }
 
+#[derive(CacheKey, Clone, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(rename_all = "kebab-case")
+)]
+pub enum DictAlignmentMode {
+    #[default]
+    None,
+    Value,
+    Colon,
+}
+
+impl DictAlignmentMode {
+    pub const fn is_disabled(&self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
 #[derive(CacheKey, Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -83,9 +102,14 @@ pub struct AlignmentOptions {
     pub align_defaults: bool,
     pub assignments: AlignmentMode,
     pub assignment_scope: AssignmentAlignmentScope,
+    pub dict_alignment: DictAlignmentMode,
     pub dict_values: AlignmentMode,
     pub call_keyword_args: AlignmentMode,
     pub import_aliases: AlignmentMode,
+    pub collection_rows: AlignmentMode,
+    pub repeated_call_args: AlignmentMode,
+    pub with_items: AlignmentMode,
+    pub trailing_comments: AlignmentMode,
     pub min_group_size: u16,
     pub break_on_blank_line: bool,
     pub break_on_leading_comment: bool,
@@ -222,9 +246,14 @@ impl AlignmentOptions {
         self.class_fields.is_disabled()
             && self.function_params.is_disabled()
             && self.assignments.is_disabled()
+            && self.dict_alignment.is_disabled()
             && self.dict_values.is_disabled()
             && self.call_keyword_args.is_disabled()
             && self.import_aliases.is_disabled()
+            && self.collection_rows.is_disabled()
+            && self.repeated_call_args.is_disabled()
+            && self.with_items.is_disabled()
+            && self.trailing_comments.is_disabled()
     }
 }
 
@@ -238,9 +267,14 @@ impl Default for AlignmentOptions {
             align_defaults: true,
             assignments: AlignmentMode::Disabled,
             assignment_scope: AssignmentAlignmentScope::All,
+            dict_alignment: DictAlignmentMode::None,
             dict_values: AlignmentMode::Disabled,
             call_keyword_args: AlignmentMode::Disabled,
             import_aliases: AlignmentMode::Disabled,
+            collection_rows: AlignmentMode::Disabled,
+            repeated_call_args: AlignmentMode::Disabled,
+            with_items: AlignmentMode::Disabled,
+            trailing_comments: AlignmentMode::Disabled,
             min_group_size: 2,
             break_on_blank_line: true,
             break_on_leading_comment: true,
@@ -259,6 +293,7 @@ pub enum CollectionLayout {
     #[default]
     RuffDefault,
     PreferCompact,
+    Fill,
     ForceExpanded,
     ExpandIfMoreThan {
         threshold: u16,

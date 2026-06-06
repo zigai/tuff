@@ -1,6 +1,7 @@
 use ruff_formatter::{FormatRuleWithOptions, write};
 use ruff_python_ast::WithItem;
 
+use crate::custom::hooks;
 use crate::expression::maybe_parenthesize_expression;
 use crate::expression::parentheses::{
     Parentheses, Parenthesize, is_expression_parenthesized, parenthesized,
@@ -165,7 +166,8 @@ impl FormatNodeRule<WithItem> for FormatWithItem {
         }
 
         if let Some(optional_vars) = optional_vars {
-            write!(f, [space(), token("as"), space()])?;
+            hooks::before_with_item_as(f, item)?;
+            write!(f, [token("as"), space()])?;
 
             if trailing_as_comments.is_empty() {
                 write!(f, [optional_vars.format()])?;

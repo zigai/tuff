@@ -10,8 +10,8 @@ use unicode_width::UnicodeWidthChar;
 use crate::comments::Comments;
 use crate::custom::diagnostics::{CustomLayoutDiagnostic, CustomLayoutError};
 use crate::custom::options::{
-    AlignmentMode, AssignmentAlignmentScope, ClassFieldAlignmentScope, FunctionParamAlignmentScope,
-    TuffCustomOptions,
+    AlignmentMode, AssignmentAlignmentScope, ClassFieldAlignmentScope, DictAlignmentMode,
+    FunctionParamAlignmentScope, TuffCustomOptions,
 };
 use crate::verbatim::{ends_suppression, starts_suppression};
 
@@ -42,6 +42,10 @@ pub struct AlignmentPlan {
     pub dict_values: FxHashMap<TextRange, AlignmentDecision>,
     pub call_keyword_args: FxHashMap<TextRange, AlignmentDecision>,
     pub import_aliases: FxHashMap<TextRange, AlignmentDecision>,
+    pub collection_row_items: FxHashMap<TextRange, AlignmentDecision>,
+    pub repeated_call_args: FxHashMap<TextRange, AlignmentDecision>,
+    pub with_items: FxHashMap<TextRange, AlignmentDecision>,
+    pub trailing_comments: FxHashMap<TextRange, AlignmentDecision>,
 }
 
 impl AlignmentPlan {
@@ -54,6 +58,10 @@ impl AlignmentPlan {
             && self.dict_values.is_empty()
             && self.call_keyword_args.is_empty()
             && self.import_aliases.is_empty()
+            && self.collection_row_items.is_empty()
+            && self.repeated_call_args.is_empty()
+            && self.with_items.is_empty()
+            && self.trailing_comments.is_empty()
     }
 }
 
@@ -155,7 +163,9 @@ pub(crate) fn build_layout_plan(
         );
     }
 
-    if matches!(options.alignment.dict_values, AlignmentMode::Enabled) {
+    if matches!(options.alignment.dict_values, AlignmentMode::Enabled)
+        || !matches!(options.alignment.dict_alignment, DictAlignmentMode::None)
+    {
         analyze_dict_values(
             &module.body,
             comments,
@@ -181,6 +191,44 @@ pub(crate) fn build_layout_plan(
 
     if matches!(options.alignment.import_aliases, AlignmentMode::Enabled) {
         analyze_import_aliases(&module.body, comments, source, options, &mut plan.alignment);
+    }
+
+    if matches!(options.alignment.collection_rows, AlignmentMode::Enabled) {
+        analyze_collection_rows(
+            &module.body,
+            comments,
+            source,
+            &index,
+            line_width,
+            &mut plan.alignment,
+        );
+    }
+
+    if matches!(options.alignment.repeated_call_args, AlignmentMode::Enabled) {
+        analyze_repeated_call_args(
+            &module.body,
+            comments,
+            source,
+            &index,
+            options,
+            line_width,
+            &mut plan.alignment,
+        );
+    }
+
+    if matches!(options.alignment.with_items, AlignmentMode::Enabled) {
+        analyze_with_items(
+            &module.body,
+            comments,
+            source,
+            &index,
+            options,
+            &mut plan.alignment,
+        );
+    }
+
+    if matches!(options.alignment.trailing_comments, AlignmentMode::Enabled) {
+        analyze_trailing_comments(&module.body, comments, source, options, &mut plan.alignment);
     }
 
     Ok(plan)
@@ -215,6 +263,10 @@ pub(crate) fn restrict_to_range(plan: &mut TuffLayoutPlan, range: TextRange) {
     restrict_alignment_map_to_range(&mut plan.alignment.dict_values, range);
     restrict_alignment_map_to_range(&mut plan.alignment.call_keyword_args, range);
     restrict_alignment_map_to_range(&mut plan.alignment.import_aliases, range);
+    restrict_alignment_map_to_range(&mut plan.alignment.collection_row_items, range);
+    restrict_alignment_map_to_range(&mut plan.alignment.repeated_call_args, range);
+    restrict_alignment_map_to_range(&mut plan.alignment.with_items, range);
+    restrict_alignment_map_to_range(&mut plan.alignment.trailing_comments, range);
 }
 
 fn restrict_alignment_map_to_range(
@@ -1308,6 +1360,410 @@ fn analyze_import_aliases(
     flush_alias_group(&mut group, options, &mut plan.import_aliases);
 }
 
+fn analyze_collection_rows(
+    body: &[Stmt],
+    comments: &Comments<'_>,
+    source: SourceCode<'_>,
+    index: &LineIndex,
+    line_width: usize,
+    plan: &mut AlignmentPlan,
+) {
+    for statement in body {
+        walk_statement_expressions(statement, &mut |expr| {
+            let Some(rows) = collection_rows(expr) else {
+                return;
+            };
+            analyze_collection_row_group(rows, comments, source, index, line_width, plan);
+        });
+    }
+}
+
+fn collection_rows(expr: &Expr) -> Option<Vec<&[Expr]>> {
+    let elements = match expr {
+        Expr::List(list) => list.elts.as_slice(),
+        Expr::Tuple(tuple) => tuple.elts.as_slice(),
+        _ => return None,
+    };
+
+    let rows = elements
+        .iter()
+        .map(|element| match element {
+            Expr::List(list) => Some(list.elts.as_slice()),
+            Expr::Tuple(tuple) => Some(tuple.elts.as_slice()),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+
+    let arity = rows.first()?.len();
+    if arity < 2 || rows.len() < 2 || rows.iter().any(|row| row.len() != arity) {
+        return None;
+    }
+
+    Some(rows)
+}
+
+fn analyze_collection_row_group(
+    rows: Vec<&[Expr]>,
+    comments: &Comments<'_>,
+    source: SourceCode<'_>,
+    index: &LineIndex,
+    line_width: usize,
+    plan: &mut AlignmentPlan,
+) {
+    let columns = rows[0].len();
+    let mut target_columns = vec![0u32; columns.saturating_sub(1)];
+    let mut candidates = Vec::new();
+
+    for row in rows {
+        let mut row_candidates = Vec::new();
+        for (column, element) in row.iter().enumerate() {
+            if comments.has_leading(element)
+                || comments.has_trailing(element)
+                || !is_simple_separator_value(element)
+                || index.line_index(element.start()) != index.line_index(element.end())
+            {
+                return;
+            }
+            let width = display_width_source(&source.as_str()[element.range()]);
+            if column < columns.saturating_sub(1) {
+                target_columns[column] = target_columns[column].max(width);
+            }
+            row_candidates.push((element.range(), column, width));
+        }
+        candidates.push(row_candidates);
+    }
+
+    let group_id =
+        AlignmentGroupId(u32::try_from(plan.collection_row_items.len()).unwrap_or(u32::MAX));
+
+    for row in candidates {
+        for (range, column, _width) in &row {
+            if *column == 0 {
+                continue;
+            }
+            let target_column = target_columns[*column - 1];
+            let padding = target_column.saturating_sub(
+                row.iter()
+                    .find(|(_, candidate_column, _)| *candidate_column == *column - 1)
+                    .map_or(0, |(_, _, previous_width)| *previous_width),
+            );
+            if display_width_for_line(*range, source.as_str()) + padding as usize > line_width {
+                return;
+            }
+            plan.collection_row_items.insert(
+                *range,
+                AlignmentDecision {
+                    group_id,
+                    padding_after_separator: u16::try_from(padding).unwrap_or(u16::MAX),
+                    target_column: DisplayColumn(target_column),
+                },
+            );
+        }
+    }
+}
+
+fn analyze_repeated_call_args(
+    body: &[Stmt],
+    comments: &Comments<'_>,
+    source: SourceCode<'_>,
+    index: &LineIndex,
+    options: &TuffCustomOptions,
+    line_width: usize,
+    plan: &mut AlignmentPlan,
+) {
+    let mut group = Vec::new();
+    let mut previous_range = None;
+    let mut previous_callee: Option<&str> = None;
+
+    for statement in body {
+        let leading_comments = comments.leading(statement);
+
+        if previous_range.is_some_and(|previous| {
+            options.alignment.break_on_blank_line
+                && has_blank_line_between(previous, statement.range(), source.as_str())
+        }) || (options.alignment.break_on_leading_comment && !leading_comments.is_empty())
+        {
+            flush_repeated_call_group(&mut group, options, line_width, plan);
+            previous_callee = None;
+        }
+
+        let candidate = repeated_call_candidate(statement, comments, source.as_str(), index);
+        if let Some(candidate) = candidate {
+            if previous_callee != Some(candidate.callee) {
+                flush_repeated_call_group(&mut group, options, line_width, plan);
+            }
+            previous_callee = Some(candidate.callee);
+            group.push(candidate);
+        } else {
+            flush_repeated_call_group(&mut group, options, line_width, plan);
+            previous_callee = None;
+        }
+
+        previous_range = Some(statement.range());
+    }
+
+    flush_repeated_call_group(&mut group, options, line_width, plan);
+}
+
+fn repeated_call_candidate<'a>(
+    statement: &'a Stmt,
+    comments: &Comments<'_>,
+    source: &'a str,
+    index: &LineIndex,
+) -> Option<RepeatedCallCandidate<'a>> {
+    let Stmt::Expr(expr_stmt) = statement else {
+        return None;
+    };
+    let Expr::Call(call) = expr_stmt.value.as_ref() else {
+        return None;
+    };
+    if !call.arguments.keywords.is_empty() || call.arguments.args.len() < 2 {
+        return None;
+    }
+
+    let mut args = Vec::new();
+    for arg in &call.arguments.args {
+        if comments.has_leading(arg)
+            || comments.has_trailing(arg)
+            || !is_simple_separator_value(arg)
+            || index.line_index(arg.start()) != index.line_index(arg.end())
+        {
+            return None;
+        }
+        args.push(ArgumentAlignmentCandidate {
+            range: arg.range(),
+            width: display_width_source(&source[arg.range()]),
+        });
+    }
+
+    Some(RepeatedCallCandidate {
+        callee: &source[call.func.range()],
+        args,
+    })
+}
+
+fn flush_repeated_call_group(
+    group: &mut Vec<RepeatedCallCandidate<'_>>,
+    options: &TuffCustomOptions,
+    line_width: usize,
+    plan: &mut AlignmentPlan,
+) {
+    if group.len() >= usize::from(options.alignment.min_group_size) {
+        let columns = group[0].args.len().saturating_sub(1);
+        if columns > 0
+            && group
+                .iter()
+                .all(|call| call.args.len().saturating_sub(1) == columns)
+        {
+            let mut target_columns = vec![0u32; columns];
+            for call in group.iter() {
+                for (index, arg) in call.args.iter().enumerate().take(columns) {
+                    target_columns[index] = target_columns[index].max(arg.width);
+                }
+            }
+
+            let group_id =
+                AlignmentGroupId(u32::try_from(plan.repeated_call_args.len()).unwrap_or(u32::MAX));
+            for call in group.iter() {
+                for (index, arg) in call.args.iter().enumerate().skip(1) {
+                    let previous = call.args[index - 1];
+                    let padding = target_columns[index - 1].saturating_sub(previous.width);
+                    if padding as usize > line_width {
+                        group.clear();
+                        return;
+                    }
+                    plan.repeated_call_args.insert(
+                        arg.range,
+                        AlignmentDecision {
+                            group_id,
+                            padding_after_separator: u16::try_from(padding).unwrap_or(u16::MAX),
+                            target_column: DisplayColumn(target_columns[index - 1]),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    group.clear();
+}
+
+fn analyze_with_items(
+    body: &[Stmt],
+    comments: &Comments<'_>,
+    source: SourceCode<'_>,
+    index: &LineIndex,
+    options: &TuffCustomOptions,
+    plan: &mut AlignmentPlan,
+) {
+    for statement in body {
+        if let Stmt::With(with_stmt) = statement {
+            let mut group = Vec::new();
+            for item in &with_stmt.items {
+                if let Some(candidate) = with_item_candidate(item, comments, source.as_str(), index)
+                {
+                    group.push(candidate);
+                }
+            }
+            flush_with_item_group(&mut group, options, &mut plan.with_items);
+            analyze_with_items(&with_stmt.body, comments, source, index, options, plan);
+        } else {
+            walk_child_suites(statement, (), &mut |body, ()| {
+                analyze_with_items(body, comments, source, index, options, plan);
+            });
+        }
+    }
+}
+
+fn with_item_candidate(
+    item: &ast::WithItem,
+    comments: &Comments<'_>,
+    source: &str,
+    index: &LineIndex,
+) -> Option<WithItemCandidate> {
+    item.optional_vars.as_ref()?;
+    let context_expr = &item.context_expr;
+
+    if comments.has_leading(context_expr)
+        || comments.has_trailing(context_expr)
+        || index.line_index(context_expr.start()) != index.line_index(context_expr.end())
+        || !source[TextRange::new(context_expr.end(), item.end())].contains("as")
+    {
+        return None;
+    }
+
+    Some(WithItemCandidate {
+        range: item.range(),
+        context_width: display_width_source(&source[context_expr.range()]),
+    })
+}
+
+fn flush_with_item_group(
+    group: &mut Vec<WithItemCandidate>,
+    options: &TuffCustomOptions,
+    map: &mut FxHashMap<TextRange, AlignmentDecision>,
+) {
+    if group.len() >= usize::from(options.alignment.min_group_size) {
+        let target_column = group
+            .iter()
+            .map(|member| member.context_width)
+            .max()
+            .unwrap_or_default();
+        let group_id = AlignmentGroupId(u32::try_from(map.len()).unwrap_or(u32::MAX));
+
+        for member in group.iter() {
+            let padding = target_column.saturating_sub(member.context_width);
+            map.insert(
+                member.range,
+                AlignmentDecision {
+                    group_id,
+                    padding_after_separator: u16::try_from(padding).unwrap_or(u16::MAX),
+                    target_column: DisplayColumn(target_column),
+                },
+            );
+        }
+    }
+
+    group.clear();
+}
+
+fn analyze_trailing_comments(
+    body: &[Stmt],
+    comments: &Comments<'_>,
+    source: SourceCode<'_>,
+    options: &TuffCustomOptions,
+    plan: &mut AlignmentPlan,
+) {
+    let mut group = Vec::new();
+    let mut previous_range = None;
+
+    for statement in body {
+        if previous_range.is_some_and(|previous| {
+            options.alignment.break_on_blank_line
+                && has_blank_line_between(previous, statement.range(), source.as_str())
+        }) || (options.alignment.break_on_leading_comment
+            && !comments.leading(statement).is_empty())
+        {
+            flush_trailing_comment_group(&mut group, options, &mut plan.trailing_comments);
+        }
+
+        let trailing_comments = trailing_comment_candidates_for_statement(statement, comments);
+        let mut inline_comments = trailing_comments
+            .iter()
+            .copied()
+            .filter(|comment| comment.line_position().is_end_of_line());
+
+        if let (Some(comment), None) = (inline_comments.next(), inline_comments.next()) {
+            let line_start = line_start_offset(statement.start(), source.as_str());
+            let code = source.as_str()[line_start..comment.start().to_usize()].trim_end();
+            let code_width = display_width_source(code);
+            group.push(TrailingCommentCandidate {
+                range: comment.range(),
+                code_width,
+            });
+        } else {
+            flush_trailing_comment_group(&mut group, options, &mut plan.trailing_comments);
+        }
+
+        walk_child_suites(statement, (), &mut |body, ()| {
+            analyze_trailing_comments(body, comments, source, options, plan);
+        });
+        previous_range = Some(statement.range());
+    }
+
+    flush_trailing_comment_group(&mut group, options, &mut plan.trailing_comments);
+}
+
+fn trailing_comment_candidates_for_statement<'a>(
+    statement: &'a Stmt,
+    comments: &'a Comments<'_>,
+) -> Vec<&'a crate::comments::SourceComment> {
+    let mut trailing = comments.trailing(statement).iter().collect::<Vec<_>>();
+
+    match statement {
+        Stmt::Assign(assign) => {
+            trailing.extend(comments.trailing(assign.value.as_ref()));
+        }
+        Stmt::AnnAssign(assign) => {
+            if let Some(value) = assign.value.as_deref() {
+                trailing.extend(comments.trailing(value));
+            }
+        }
+        _ => {}
+    }
+
+    trailing
+}
+
+fn flush_trailing_comment_group(
+    group: &mut Vec<TrailingCommentCandidate>,
+    options: &TuffCustomOptions,
+    map: &mut FxHashMap<TextRange, AlignmentDecision>,
+) {
+    if group.len() >= usize::from(options.alignment.min_group_size) {
+        let target_column = group
+            .iter()
+            .map(|member| member.code_width)
+            .max()
+            .unwrap_or_default();
+        let group_id = AlignmentGroupId(u32::try_from(map.len()).unwrap_or(u32::MAX));
+
+        for member in group.iter() {
+            let padding = target_column.saturating_sub(member.code_width);
+            map.insert(
+                member.range,
+                AlignmentDecision {
+                    group_id,
+                    padding_after_separator: u16::try_from(padding).unwrap_or(u16::MAX),
+                    target_column: DisplayColumn(target_column),
+                },
+            );
+        }
+    }
+
+    group.clear();
+}
+
 fn alias_candidate(
     alias: &ast::Alias,
     comments: &Comments<'_>,
@@ -1833,4 +2289,28 @@ struct SeparatorCandidate {
 struct AliasCandidate {
     range: TextRange,
     name_width: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ArgumentAlignmentCandidate {
+    range: TextRange,
+    width: u32,
+}
+
+#[derive(Clone, Debug)]
+struct RepeatedCallCandidate<'a> {
+    callee: &'a str,
+    args: Vec<ArgumentAlignmentCandidate>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct WithItemCandidate {
+    range: TextRange,
+    context_width: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TrailingCommentCandidate {
+    range: TextRange,
+    code_width: u32,
 }

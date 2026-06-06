@@ -6,8 +6,8 @@ use toml::map::Map;
 use toml::{Table, Value};
 use tuff_python_formatter::{
     AlignmentMode, AssignmentAlignmentScope, ClassFieldAlignmentScope, CollectionLayout,
-    FeatureMode, FunctionParamAlignmentScope, OneLineSuiteClause, OneLineSuiteStatement,
-    TuffCustomOptions,
+    DictAlignmentMode, FeatureMode, FunctionParamAlignmentScope, OneLineSuiteClause,
+    OneLineSuiteStatement, TuffCustomOptions,
 };
 
 pub(crate) fn custom_options(path: Option<&Path>) -> Result<TuffCustomOptions> {
@@ -118,9 +118,25 @@ fn apply_alignment_table(table: &Map<String, Value>, custom: &mut TuffCustomOpti
             "assignment-scope" => {
                 custom.alignment.assignment_scope = assignment_alignment_scope(value, key)?;
             }
-            "dict-values" => custom.alignment.dict_values = alignment_mode(value, key)?,
+            "dict-alignment" => custom.alignment.dict_alignment = dict_alignment_mode(value, key)?,
+            "dict-values" => {
+                custom.alignment.dict_values = alignment_mode(value, key)?;
+                if matches!(custom.alignment.dict_values, AlignmentMode::Enabled)
+                    && matches!(custom.alignment.dict_alignment, DictAlignmentMode::None)
+                {
+                    custom.alignment.dict_alignment = DictAlignmentMode::Value;
+                }
+            }
             "call-keyword-args" => custom.alignment.call_keyword_args = alignment_mode(value, key)?,
             "import-aliases" => custom.alignment.import_aliases = alignment_mode(value, key)?,
+            "collection-rows" => custom.alignment.collection_rows = alignment_mode(value, key)?,
+            "repeated-call-args" => {
+                custom.alignment.repeated_call_args = alignment_mode(value, key)?;
+            }
+            "with-items" => custom.alignment.with_items = alignment_mode(value, key)?,
+            "trailing-comments" => {
+                custom.alignment.trailing_comments = alignment_mode(value, key)?;
+            }
             "min-group-size" => custom.alignment.min_group_size = value_as_u16(value, key)?,
             "break-on-blank-line" => {
                 custom.alignment.break_on_blank_line = bool_value(value, key)?;
@@ -279,6 +295,18 @@ fn alignment_mode(value: &Value, key: &str) -> Result<AlignmentMode> {
     }
 }
 
+fn dict_alignment_mode(value: &Value, key: &str) -> Result<DictAlignmentMode> {
+    match value
+        .as_str()
+        .ok_or_else(|| anyhow!("expected string for `{key}`"))?
+    {
+        "none" => Ok(DictAlignmentMode::None),
+        "value" => Ok(DictAlignmentMode::Value),
+        "colon" => Ok(DictAlignmentMode::Colon),
+        value => bail!("unsupported dict alignment mode `{value}`"),
+    }
+}
+
 fn class_field_alignment_scope(value: &Value, key: &str) -> Result<ClassFieldAlignmentScope> {
     match value
         .as_str()
@@ -357,6 +385,7 @@ fn collection_layout(value: &str) -> Result<CollectionLayout> {
     match value {
         "ruff-default" => Ok(CollectionLayout::RuffDefault),
         "prefer-compact" => Ok(CollectionLayout::PreferCompact),
+        "fill" => Ok(CollectionLayout::Fill),
         "force-expanded" => Ok(CollectionLayout::ForceExpanded),
         "expand-if-more-than" => Ok(CollectionLayout::ExpandIfMoreThan { threshold: 0 }),
         "preserve-input" => Ok(CollectionLayout::PreserveInput),

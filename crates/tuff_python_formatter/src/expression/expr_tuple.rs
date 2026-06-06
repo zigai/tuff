@@ -178,6 +178,26 @@ impl FormatNodeRule<ExprTuple> for FormatExprTuple {
                     ]
                 )
             }
+            _ if should_fill_tuple(item, self.parentheses, *is_parenthesized, f) => {
+                write!(
+                    f,
+                    [
+                        token("("),
+                        block_indent(&format_with(|f| {
+                            let mut fill = f.fill();
+                            for element in &item.elts {
+                                fill.entry(
+                                    &format_args![token(","), soft_line_break_or_space()],
+                                    &CollectionElement(element),
+                                );
+                            }
+                            fill.finish()?;
+                            token(",").fmt(f)
+                        })),
+                        token(")")
+                    ]
+                )
+            }
             // If the tuple has parentheses, we generally want to keep them. The exception are for
             // loops, see `TupleParentheses::NeverPreserve` doc comment.
             //
@@ -241,6 +261,37 @@ fn should_force_expand_tuple(
     )
 }
 
+fn should_fill_tuple(
+    item: &ExprTuple,
+    parentheses: TupleParentheses,
+    is_parenthesized: bool,
+    f: &PyFormatter,
+) -> bool {
+    if !f.context().source()[item.range()].contains('\n') {
+        return false;
+    }
+
+    if !is_parenthesized
+        && !matches!(
+            parentheses,
+            TupleParentheses::Default | TupleParentheses::OptionalParentheses
+        )
+    {
+        return false;
+    }
+
+    matches!(
+        hooks::collection_layout(
+            f,
+            CollectionSubject::Tuple,
+            item.elts.len(),
+            !f.context().comments().dangling(item).is_empty(),
+            has_trailing_comma(item.range(), f.context()),
+        ),
+        CollectionDecision::Fill
+    )
+}
+
 #[derive(Debug)]
 struct ExprSequence<'a> {
     tuple: &'a ExprTuple,
@@ -255,8 +306,22 @@ impl<'a> ExprSequence<'a> {
 impl Format<PyFormatContext<'_>> for ExprSequence<'_> {
     fn fmt(&self, f: &mut PyFormatter) -> FormatResult<()> {
         f.join_comma_separated(self.tuple.end())
-            .nodes(&self.tuple.elts)
+            .entries(
+                self.tuple
+                    .elts
+                    .iter()
+                    .map(|element| (element, CollectionElement(element))),
+            )
             .finish()
+    }
+}
+
+struct CollectionElement<'a>(&'a ruff_python_ast::Expr);
+
+impl Format<PyFormatContext<'_>> for CollectionElement<'_> {
+    fn fmt(&self, f: &mut PyFormatter) -> FormatResult<()> {
+        hooks::before_collection_element(f, self.0)?;
+        self.0.format().fmt(f)
     }
 }
 

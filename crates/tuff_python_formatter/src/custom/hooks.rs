@@ -2,11 +2,12 @@ use ruff_formatter::Format;
 use ruff_formatter::FormatResult;
 use ruff_formatter::prelude::{space, text, token};
 use ruff_python_ast as ast;
-use ruff_python_ast::{AnyNodeRef, Stmt};
+use ruff_python_ast::{AnyNodeRef, Expr, Stmt};
 use ruff_text_size::Ranged;
 
 use crate::PyFormatter;
-use crate::custom::options::{CollectionLayout, FeatureMode};
+use crate::comments::SourceComment;
+use crate::custom::options::{CollectionLayout, DictAlignmentMode, FeatureMode};
 pub(crate) use crate::custom::options::{OneLineSuiteClause, OneLineSuiteStatement};
 
 #[derive(Clone, Copy)]
@@ -33,6 +34,7 @@ pub(crate) enum CollectionSubject {
 pub(crate) enum CollectionDecision {
     UseRuffDefault,
     PreferFlat,
+    Fill,
     ForceExpanded,
     PreserveInput,
 }
@@ -126,8 +128,35 @@ pub(crate) fn dict_key_value_separator(
     f: &mut PyFormatter,
     item: &ast::DictItem,
 ) -> FormatResult<()> {
+    let decision = f
+        .context()
+        .custom_layout()
+        .alignment
+        .dict_values
+        .get(&item.range());
+
+    if matches!(
+        f.context().custom_options().alignment.dict_alignment,
+        DictAlignmentMode::Colon
+    ) && let Some(decision) = decision
+    {
+        let padding = " ".repeat(usize::from(decision.padding_after_separator));
+        text(&padding).fmt(f)?;
+    }
+
     token(":").fmt(f)?;
-    separator_space(f, SeparatorSubject(item))
+
+    if matches!(
+        f.context().custom_options().alignment.dict_alignment,
+        DictAlignmentMode::Value
+    ) || matches!(
+        f.context().custom_options().alignment.dict_values,
+        crate::custom::options::AlignmentMode::Enabled
+    ) {
+        separator_space(f, SeparatorSubject(item))
+    } else {
+        space().fmt(f)
+    }
 }
 
 pub(crate) fn keyword_separator(f: &mut PyFormatter, keyword: &ast::Keyword) -> FormatResult<()> {
@@ -160,6 +189,85 @@ pub(crate) fn before_alias_as(f: &mut PyFormatter, alias: &ast::Alias) -> Format
     } else {
         space().fmt(f)
     }
+}
+
+pub(crate) fn before_with_item_as(f: &mut PyFormatter, item: &ast::WithItem) -> FormatResult<()> {
+    if let Some(decision) = f
+        .context()
+        .custom_layout()
+        .alignment
+        .with_items
+        .get(&item.range())
+    {
+        let padding = " ".repeat(usize::from(decision.padding_after_separator) + 1);
+        text(&padding).fmt(f)
+    } else {
+        space().fmt(f)
+    }
+}
+
+pub(crate) fn before_collection_element(f: &mut PyFormatter, expr: &Expr) -> FormatResult<()> {
+    before_aligned_expression(f, expr, ExpressionAlignmentSubject::CollectionRow)
+}
+
+pub(crate) fn before_call_argument(f: &mut PyFormatter, expr: &Expr) -> FormatResult<()> {
+    before_aligned_expression(f, expr, ExpressionAlignmentSubject::RepeatedCall)
+}
+
+fn before_aligned_expression(
+    f: &mut PyFormatter,
+    expr: &Expr,
+    subject: ExpressionAlignmentSubject,
+) -> FormatResult<()> {
+    let decision = match subject {
+        ExpressionAlignmentSubject::CollectionRow => f
+            .context()
+            .custom_layout()
+            .alignment
+            .collection_row_items
+            .get(&expr.range()),
+        ExpressionAlignmentSubject::RepeatedCall => f
+            .context()
+            .custom_layout()
+            .alignment
+            .repeated_call_args
+            .get(&expr.range()),
+    };
+
+    if let Some(decision) = decision
+        && decision.padding_after_separator > 0
+    {
+        let padding = " ".repeat(usize::from(decision.padding_after_separator));
+        text(&padding).fmt(f)?;
+    }
+
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ExpressionAlignmentSubject {
+    CollectionRow,
+    RepeatedCall,
+}
+
+pub(crate) fn before_trailing_comment(
+    f: &mut PyFormatter,
+    comment: &SourceComment,
+) -> FormatResult<()> {
+    if let Some(decision) = f
+        .context()
+        .custom_layout()
+        .alignment
+        .trailing_comments
+        .get(&comment.range())
+    {
+        if decision.padding_after_separator > 0 {
+            let padding = " ".repeat(usize::from(decision.padding_after_separator));
+            text(&padding).fmt(f)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn separator_space(f: &mut PyFormatter, subject: SeparatorSubject<'_>) -> FormatResult<()> {
@@ -202,6 +310,7 @@ pub(crate) fn collection_layout(
     match policy.layout {
         CollectionLayout::RuffDefault => CollectionDecision::UseRuffDefault,
         CollectionLayout::PreferCompact => CollectionDecision::PreferFlat,
+        CollectionLayout::Fill => CollectionDecision::Fill,
         CollectionLayout::ForceExpanded => CollectionDecision::ForceExpanded,
         CollectionLayout::ExpandIfMoreThan { threshold } => {
             if item_count > usize::from(threshold) {

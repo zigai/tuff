@@ -10,6 +10,7 @@ use ruff_text_size::{Ranged, TextLen, TextRange};
 
 use crate::comments::SourceComment;
 use crate::context::NodeLevel;
+use crate::custom::hooks;
 use crate::prelude::*;
 use crate::preview::is_trailing_pragma_in_comment_width_enabled;
 use crate::statement::suite::should_insert_blank_line_after_class_in_stub_file;
@@ -408,11 +409,20 @@ impl Format<PyFormatContext<'_>> for FormatTrailingEndOfLineComment<'_> {
             f,
             [
                 line_suffix(
-                    &format_args![
-                        space(),
-                        space(),
-                        format_normalized_comment(normalized_comment, slice.range())
-                    ],
+                    &format_with(|f| {
+                        hooks::before_trailing_comment(f, self.comment)?;
+                        write!(
+                            f,
+                            [
+                                space(),
+                                space(),
+                                format_normalized_comment(
+                                    normalized_comment.clone(),
+                                    slice.range()
+                                )
+                            ]
+                        )
+                    }),
                     reserved_width
                 ),
                 expand_parent()

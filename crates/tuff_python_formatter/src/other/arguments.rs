@@ -3,6 +3,7 @@ use ruff_python_ast::{ArgOrKeyword, Arguments, Expr, StringFlags, StringLike};
 use ruff_python_trivia::{PythonWhitespace, SimpleTokenKind, SimpleTokenizer};
 use ruff_text_size::{Ranged, TextLen, TextRange, TextSize};
 
+use crate::custom::hooks;
 use crate::expression::expr_generator::GeneratorExpParentheses;
 use crate::expression::is_expression_huggable;
 use crate::expression::parentheses::{Parentheses, empty_parenthesized, parenthesized};
@@ -64,7 +65,7 @@ impl FormatNodeRule<Arguments> for FormatArguments {
                     for arg_or_keyword in item.iter_source_order() {
                         match arg_or_keyword {
                             ArgOrKeyword::Arg(arg) => {
-                                joiner.entry(arg, &arg.format());
+                                joiner.entry(arg, &CallArgument(arg));
                             }
                             ArgOrKeyword::Keyword(keyword) => {
                                 joiner.entry(keyword, &keyword.format());
@@ -111,6 +112,15 @@ impl FormatNodeRule<Arguments> for FormatArguments {
                     .with_dangling_comments(dangling_comments)
             ]
         )
+    }
+}
+
+struct CallArgument<'a>(&'a Expr);
+
+impl Format<PyFormatContext<'_>> for CallArgument<'_> {
+    fn fmt(&self, f: &mut PyFormatter) -> FormatResult<()> {
+        hooks::before_call_argument(f, self.0)?;
+        self.0.format().fmt(f)
     }
 }
 

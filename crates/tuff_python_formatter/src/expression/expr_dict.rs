@@ -58,18 +58,40 @@ impl FormatNodeRule<ExprDict> for FormatExprDict {
             joiner.finish()
         });
 
-        match hooks::collection_layout(
+        let collection_layout = hooks::collection_layout(
             f,
             CollectionSubject::Dict,
             items.len(),
             !open_parenthesis_comments.is_empty() || !key_value_comments.is_empty(),
             false,
-        ) {
+        );
+        let source_is_multiline = f.context().source()[item.range()].contains('\n');
+
+        match collection_layout {
             CollectionDecision::ForceExpanded => {
                 write!(f, [token("{"), block_indent(&format_pairs), token("}")])
             }
+            CollectionDecision::Fill if source_is_multiline => write!(
+                f,
+                [
+                    token("{"),
+                    block_indent(&format_with(|f| {
+                        let mut fill = f.fill();
+                        for dict_item in items {
+                            fill.entry(
+                                &format_args![token(","), soft_line_break_or_space()],
+                                &KeyValuePair::new(dict_item),
+                            );
+                        }
+                        fill.finish()?;
+                        token(",").fmt(f)
+                    })),
+                    token("}")
+                ]
+            ),
             CollectionDecision::UseRuffDefault
             | CollectionDecision::PreferFlat
+            | CollectionDecision::Fill
             | CollectionDecision::PreserveInput => parenthesized("{", &format_pairs, "}")
                 .with_dangling_comments(open_parenthesis_comments)
                 .fmt(f),

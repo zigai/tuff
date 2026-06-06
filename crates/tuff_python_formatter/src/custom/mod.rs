@@ -7,6 +7,7 @@ pub use layout::TuffLayoutPlan;
 pub use options::{
     AlignmentMode, AlignmentOptions, AssignmentAlignmentScope, BlankLineOptions,
     ClassFieldAlignmentScope, CollectionLayout, CollectionOptions, CollectionPolicy, CommaOptions,
-    DocstringOptions, FeatureMode, FunctionParamAlignmentScope, OneLineSuiteClause,
-    OneLineSuiteOptions, OneLineSuiteStatement, SpacingOptions, TuffCustomOptions,
+    DictAlignmentMode, DocstringOptions, FeatureMode, FunctionParamAlignmentScope,
+    OneLineSuiteClause, OneLineSuiteOptions, OneLineSuiteStatement, SpacingOptions,
+    TuffCustomOptions,
 };

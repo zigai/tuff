@@ -22,8 +22,9 @@ pub use crate::context::PyFormatContext;
 pub use crate::custom::{
     AlignmentMode, AlignmentOptions, AssignmentAlignmentScope, BlankLineOptions,
     ClassFieldAlignmentScope, CollectionLayout, CollectionOptions, CollectionPolicy, CommaOptions,
-    DocstringOptions, FeatureMode, FunctionParamAlignmentScope, OneLineSuiteClause,
-    OneLineSuiteOptions, OneLineSuiteStatement, TuffCustomOptions, TuffLayoutPlan,
+    DictAlignmentMode, DocstringOptions, FeatureMode, FunctionParamAlignmentScope,
+    OneLineSuiteClause, OneLineSuiteOptions, OneLineSuiteStatement, TuffCustomOptions,
+    TuffLayoutPlan,
 };
 pub use crate::db::Db;
 pub use crate::options::{
