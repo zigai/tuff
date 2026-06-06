@@ -32,15 +32,20 @@ align-defaults = true
 assignments = "enabled"
 assignment-scope = "class"
 dict-values = "enabled"
+dict-alignment = "value"
 call-keyword-args = "enabled"
 import-aliases = "enabled"
+collection-rows = "enabled"
+repeated-call-args = "enabled"
+with-items = "enabled"
+trailing-comments = "enabled"
 min-group-size = 2
 break-on-blank-line = true
 break-on-leading-comment = true
 break-on-trailing-comment = false
 ```
 
-`class-fields`, `function-params`, `assignments`, `dict-values`, `call-keyword-args`, and `import-aliases` accept these mode values:
+`class-fields`, `function-params`, `assignments`, `dict-values`, `call-keyword-args`, `import-aliases`, `collection-rows`, `repeated-call-args`, `with-items`, and `trailing-comments` accept these mode values:
 
 | Value              | Behavior                                                      |
 | ------------------ | ------------------------------------------------------------- |
@@ -246,7 +251,7 @@ Tuff does not align across `# fmt: off` regions.
 
 ### Dict Values
 
-`dict-values = "enabled"` aligns values in neighboring multiline dictionary entries.
+`dict-values = "enabled"` aligns values in neighboring multiline dictionary entries. `dict-alignment = "value"` enables the same value alignment through the newer dictionary alignment option.
 
 ```python
 options = {
@@ -267,6 +272,28 @@ options = {
 ```
 
 Only simple single-line values participate. If a dict group contains a complex value that Ruff may expand, tuff leaves that group on Ruff's normal spacing path to keep repeated formatting stable.
+
+Use `dict-alignment = "colon"` to align the colon itself instead of padding after the colon.
+
+```python
+options = {
+    "path": path,
+    "config_path": config_path,
+    "enabled": False,
+}
+```
+
+becomes:
+
+```python
+options = {
+    "path"       : path,
+    "config_path": config_path,
+    "enabled"    : False,
+}
+```
+
+Accepted values for `dict-alignment` are `"none"`, `"value"`, and `"colon"`. The legacy `dict-values = "enabled"` setting is still accepted and is equivalent to `dict-alignment = "value"` unless `dict-alignment` is set explicitly.
 
 ### Call Keyword Arguments
 
@@ -311,6 +338,96 @@ import package.submodule.gamma as gamma
 ```
 
 Only single-alias import statements participate. Parenthesized `from ... import (...)` blocks keep Ruff's normal formatting.
+
+### Collection Rows
+
+`collection-rows = "enabled"` aligns columns inside table-like nested list and tuple rows.
+
+```python
+rows = [
+    ("id", "name", "active"),
+    (1, "Ana", True),
+    (20, "Benedict", False),
+]
+```
+
+becomes:
+
+```python
+rows = [
+    ("id", "name",     "active"),
+    (1,    "Ana",      True),
+    (20,   "Benedict", False),
+]
+```
+
+Only rectangular list and tuple rows with simple single-line elements participate.
+
+### Repeated Call Arguments
+
+`repeated-call-args = "enabled"` aligns positional arguments across neighboring calls to the same callee.
+
+```python
+router.add_route("GET", "/users", list_users)
+router.add_route("POST", "/users", create_user)
+router.add_route("DELETE", "/users/{id}", delete_user)
+```
+
+becomes:
+
+```python
+router.add_route("GET",    "/users",      list_users)
+router.add_route("POST",   "/users",      create_user)
+router.add_route("DELETE", "/users/{id}", delete_user)
+```
+
+Calls must have the same callee, the same positional arity, no keyword arguments, and simple single-line argument values.
+
+### With Items
+
+`with-items = "enabled"` aligns the `as` target in multi-item `with` statements.
+
+```python
+with (
+    open(input_path) as input_file,
+    open(output_path) as output_file,
+    lock as acquired_lock,
+):
+    process()
+```
+
+becomes:
+
+```python
+with (
+    open(input_path)  as input_file,
+    open(output_path) as output_file,
+    lock              as acquired_lock,
+):
+    process()
+```
+
+Only items with simple single-line context expressions and `as` targets participate.
+
+### Trailing Comments
+
+`trailing-comments = "enabled"` aligns neighboring end-of-line comments.
+
+```python
+HOST = "localhost"  # main API host
+PORT = 443  # TLS
+TIMEOUT_SECONDS = 30  # request timeout
+```
+
+becomes:
+
+```python
+HOST = "localhost"    # main API host
+PORT = 443            # TLS
+TIMEOUT_SECONDS = 30  # request timeout
+```
+
+Statements with multiple trailing comments are left on Ruff's normal spacing path.
 
 ## Collection Layout
 
@@ -390,6 +507,38 @@ lists = { layout = "expand-if-more-than", threshold = 3 }
 
 With this setting, lists with one, two, or three items use Ruff's default formatting. Lists with four or more items expand.
 
+### Fill
+
+`layout = "fill"` keeps an already multiline collection expanded but packs as many items as fit on each line.
+
+```python
+values = [
+    "read",
+    "write",
+    "delete",
+    "admin",
+    "billing",
+    "support",
+]
+```
+
+with:
+
+```toml
+[tool.tuff.format.collections]
+lists = { layout = "fill" }
+```
+
+becomes:
+
+```python
+values = [
+    "read", "write", "delete", "admin", "billing", "support",
+]
+```
+
+Single-line collections keep Ruff's normal formatting.
+
 ### Accepted Values
 
 | Value                   | Behavior                                                         |
@@ -397,6 +546,7 @@ With this setting, lists with one, two, or three items use Ruff's default format
 | `"ruff-default"`        | Use Ruff's normal collection formatting.                         |
 | `"force-expanded"`      | Expand non-empty collections onto multiple lines.                |
 | `"expand-if-more-than"` | Expand collections whose item count is greater than `threshold`. |
+| `"fill"`                | Pack already multiline collection items onto filled rows.        |
 | `"prefer-compact"`      | Accepted, currently equivalent to `"ruff-default"`.              |
 | `"preserve-input"`      | Accepted, currently equivalent to `"ruff-default"`.              |
 

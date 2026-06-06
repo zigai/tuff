@@ -881,15 +881,20 @@ align-defaults = true
 assignments = "enabled"
 assignment-scope = "class"
 dict-values = "enabled"
+dict-alignment = "value"
 call-keyword-args = "enabled"
 import-aliases = "enabled"
+collection-rows = "enabled"
+repeated-call-args = "enabled"
+with-items = "enabled"
+trailing-comments = "enabled"
 min-group-size = 2
 break-on-blank-line = true
 break-on-leading-comment = true
 break-on-trailing-comment = false
 
 [tool.tuff.format.collections]
-lists = { layout = "expand-if-more-than", threshold = 3 }
+lists = { layout = "fill" }
 dicts = { layout = "force-expanded" }
 tuples = { layout = "ruff-default" }
 sets = { layout = "ruff-default" }
