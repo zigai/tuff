@@ -2,8 +2,8 @@ use ruff_formatter::LineWidth;
 use ruff_text_size::{TextRange, TextSize};
 use tuff_python_formatter::{
     AlignmentMode, AssignmentAlignmentScope, ClassFieldAlignmentScope, CollectionLayout,
-    FunctionParamAlignmentScope, PyFormatOptions, TuffCustomOptions, format_module_source,
-    format_range,
+    DictAlignmentMode, FunctionParamAlignmentScope, PyFormatOptions, TuffCustomOptions,
+    format_module_source, format_range,
 };
 
 fn class_field_alignment_options() -> PyFormatOptions {
@@ -1385,6 +1385,125 @@ fn aligns_dict_values() {
 
     let mut custom = TuffCustomOptions::default();
     custom.alignment.dict_values = AlignmentMode::Enabled;
+    let options = PyFormatOptions::default().with_custom(custom);
+    let formatted = format(source, options.clone());
+
+    assert_eq!(formatted, expected);
+    assert_eq!(format(&formatted, options), formatted);
+}
+
+#[test]
+fn aligns_dict_colons() {
+    let source = r#"payload = {
+    "video_path": video_path,
+    "credentials_path": credentials_path,
+    "notify_subscribers": False,
+}
+"#;
+
+    let expected = r#"payload = {
+    "video_path"        : video_path,
+    "credentials_path"  : credentials_path,
+    "notify_subscribers": False,
+}
+"#;
+
+    let mut custom = TuffCustomOptions::default();
+    custom.alignment.dict_alignment = DictAlignmentMode::Colon;
+    let options = PyFormatOptions::default().with_custom(custom);
+    let formatted = format(source, options.clone());
+
+    assert_eq!(formatted, expected);
+    assert_eq!(format(&formatted, options), formatted);
+}
+
+#[test]
+fn aligns_collection_rows() {
+    let source = r#"rows = [
+    ("id", "name", "active"),
+    (1, "Ana", True),
+    (20, "Benedict", False),
+]
+"#;
+
+    let expected = r#"rows = [
+    ("id", "name",     "active"),
+    (1,    "Ana",      True),
+    (20,   "Benedict", False),
+]
+"#;
+
+    let mut custom = TuffCustomOptions::default();
+    custom.alignment.collection_rows = AlignmentMode::Enabled;
+    let options = PyFormatOptions::default().with_custom(custom);
+    let formatted = format(source, options.clone());
+
+    assert_eq!(formatted, expected);
+    assert_eq!(format(&formatted, options), formatted);
+}
+
+#[test]
+fn aligns_repeated_call_arguments() {
+    let source = r#"router.add_route("GET", "/users", list_users)
+router.add_route("POST", "/users", create_user)
+router.add_route("DELETE", "/users/{id}", delete_user)
+"#;
+
+    let expected = r#"router.add_route("GET",    "/users",      list_users)
+router.add_route("POST",   "/users",      create_user)
+router.add_route("DELETE", "/users/{id}", delete_user)
+"#;
+
+    let mut custom = TuffCustomOptions::default();
+    custom.alignment.repeated_call_args = AlignmentMode::Enabled;
+    let options = PyFormatOptions::default().with_custom(custom);
+    let formatted = format(source, options.clone());
+
+    assert_eq!(formatted, expected);
+    assert_eq!(format(&formatted, options), formatted);
+}
+
+#[test]
+fn aligns_with_items() {
+    let source = r#"with (
+    open(input_path) as input_file,
+    open(output_path) as output_file,
+    lock as acquired_lock,
+):
+    process()
+"#;
+
+    let expected = r#"with (
+    open(input_path)  as input_file,
+    open(output_path) as output_file,
+    lock              as acquired_lock,
+):
+    process()
+"#;
+
+    let mut custom = TuffCustomOptions::default();
+    custom.alignment.with_items = AlignmentMode::Enabled;
+    let options = PyFormatOptions::default().with_custom(custom);
+    let formatted = format(source, options.clone());
+
+    assert_eq!(formatted, expected);
+    assert_eq!(format(&formatted, options), formatted);
+}
+
+#[test]
+fn aligns_trailing_comments() {
+    let source = r#"HOST = "localhost"  # main API host
+PORT = 443  # TLS
+TIMEOUT_SECONDS = 30  # request timeout
+"#;
+
+    let expected = r#"HOST = "localhost"    # main API host
+PORT = 443            # TLS
+TIMEOUT_SECONDS = 30  # request timeout
+"#;
+
+    let mut custom = TuffCustomOptions::default();
+    custom.alignment.trailing_comments = AlignmentMode::Enabled;
     let options = PyFormatOptions::default().with_custom(custom);
     let formatted = format(source, options.clone());
 

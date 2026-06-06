@@ -367,6 +367,78 @@ create_job(
 }
 
 #[test]
+fn reads_new_alignment_and_fill_config() {
+    let tempdir = tempdir().unwrap();
+    fs::write(
+        tempdir.path().join("pyproject.toml"),
+        r#"
+[tool.tuff.format.alignment]
+dict-alignment = "colon"
+collection-rows = "enabled"
+repeated-call-args = "enabled"
+with-items = "enabled"
+trailing-comments = "enabled"
+
+[tool.tuff.format.collections]
+lists = { layout = "fill" }
+"#,
+    )
+    .unwrap();
+    let path = tempdir.path().join("example.py");
+    fs::write(
+        &path,
+        r#"payload = {
+    "video_path": video_path,
+    "credentials_path": credentials_path,
+}
+
+permissions = [
+    "read",
+    "write",
+    "delete",
+    "admin",
+    "billing",
+]
+
+rows = [
+    ("id", "name", "active"),
+    (1, "Ana", True),
+    (20, "Benedict", False),
+]
+
+router.add_route("GET", "/users", list_users)
+router.add_route("DELETE", "/users/{id}", delete_user)
+
+with (
+    open(input_path) as input_file,
+    open(output_path) as output_file,
+):
+    process()
+
+HOST = "localhost"  # main API host
+PORT = 443  # TLS
+"#,
+    )
+    .unwrap();
+
+    let output = tuff()
+        .arg("format")
+        .arg(&path)
+        .output()
+        .expect("failed to run tuff");
+
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let formatted = fs::read_to_string(path).unwrap();
+    assert!(formatted.contains("\"video_path\"      : video_path"));
+    assert!(formatted.contains("\"read\", \"write\", \"delete\", \"admin\", \"billing\","));
+    assert!(formatted.contains("(1,    \"Ana\",      True)"));
+    assert!(formatted.contains("router.add_route(\"GET\",    \"/users\",      list_users)"));
+    assert!(formatted.contains("open(input_path)  as input_file"));
+    assert!(formatted.contains("HOST = \"localhost\"  # main API host"));
+    assert!(formatted.contains("PORT = 443          # TLS"));
+}
+
+#[test]
 fn check_exits_nonzero_when_file_would_change() {
     let tempdir = tempdir().unwrap();
     let path = tempdir.path().join("example.py");
