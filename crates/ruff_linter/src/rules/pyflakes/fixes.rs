@@ -1,3 +1,5 @@
+use std::debug_assert_matches;
+
 use anyhow::{Context, Ok, Result};
 
 use ruff_python_ast as ast;
@@ -73,13 +75,18 @@ pub(crate) fn remove_unused_positional_arguments_from_format_call(
     // If we're removing _all_ arguments, we can remove the entire call.
     //
     // For example, `"Hello".format(", world!")` -> `"Hello"`, as opposed to `"Hello".format()`.
-    if unused_arguments.len() == call.arguments.len() {
-        if let Expr::Attribute(attribute) = &*call.func {
-            return Ok(Edit::range_replacement(
-                locator.slice(&*attribute.value).to_string(),
-                call.range(),
-            ));
-        }
+    //
+    // However, if the `format` call has other effects, like escaping `{{` to `{` or would raise a
+    // `KeyError` for a missing field name, we preserve the empty call to avoid changing behavior.
+    if unused_arguments.len() == call.arguments.len()
+        && let Expr::Attribute(attribute) = &*call.func
+        && let Expr::StringLiteral(string_expr) = &*attribute.value
+        && !string_expr.value.to_str().contains(['{', '}'])
+    {
+        return Ok(Edit::range_replacement(
+            locator.slice(string_expr).to_string(),
+            call.range(),
+        ));
     }
 
     let source_code = locator.slice(call);
@@ -94,12 +101,7 @@ pub(crate) fn remove_unused_positional_arguments_from_format_call(
             !is_unused
         });
 
-        // If there are no arguments left, remove the parentheses.
-        if call.args.is_empty() {
-            Ok((*call.func).clone())
-        } else {
-            Ok(expression)
-        }
+        Ok(expression)
     })
     .map(|output| Edit::range_replacement(output, call.range()))
 }
@@ -125,7 +127,7 @@ pub(crate) fn remove_exception_handler_assignment(
     let preceding = tokenizer
         .next()
         .context("expected the exception name to be preceded by `as`")?;
-    debug_assert!(matches!(preceding.kind, SimpleTokenKind::As));
+    debug_assert_matches!(preceding.kind, SimpleTokenKind::As);
 
     // Lex to the end of the preceding token, which should be the exception value.
     let preceding = tokenizer
@@ -137,7 +139,7 @@ pub(crate) fn remove_exception_handler_assignment(
         .skip_trivia()
         .next()
         .context("expected the exception name to be followed by a colon")?;
-    debug_assert!(matches!(following.kind, SimpleTokenKind::Colon));
+    debug_assert_matches!(following.kind, SimpleTokenKind::Colon);
 
     Ok(Edit::deletion(preceding.end(), following.start()))
 }

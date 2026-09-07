@@ -1,10 +1,8 @@
 use anyhow::Result;
 use insta::assert_snapshot;
 use lsp_types::{
-    DiagnosticSeverity, DocumentDiagnosticReport, DocumentDiagnosticReportResult,
-    FullDocumentDiagnosticReport, Position, WorkspaceDiagnosticReport,
-    WorkspaceDiagnosticReportPartialResult, WorkspaceDiagnosticReportResult,
-    WorkspaceDocumentDiagnosticReport,
+    DiagnosticSeverity, DocumentDiagnosticReport, FullDocumentDiagnosticReport, Message, Position,
+    WorkspaceDiagnosticReport, WorkspaceDocumentDiagnosticReport,
 };
 use ruff_db::system::SystemPath;
 use ty_server::{ClientOptions, DiagnosticMode, GlobalOptions, WorkspaceOptions};
@@ -13,9 +11,29 @@ use crate::{
     TestServer, TestServerBuilder,
     pull_diagnostics::{
         assert_workspace_diagnostics_suspends_for_long_polling, send_workspace_diagnostic_request,
-        shutdown_and_await_workspace_diagnostic,
+        shutdown_and_await_workspace_diagnostic, sort_workspace_diagnostic_response,
     },
 };
+
+/// A file-valued workspace initializes successfully and discovers its parent configuration.
+#[test]
+fn single_file_workspace() -> Result<()> {
+    let main = SystemPath::new("project/main.py");
+    let mut server = TestServerBuilder::new()?
+        .with_file(main, "missing")?
+        .with_file("project/ty.toml", "[rules]\nunresolved-reference = 'warn'")?
+        .with_workspace(main, None)?
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    server.open_text_document(main, "missing", 1);
+    assert_eq!(
+        condensed_document_diagnostic_snapshot(server.document_diagnostic_request(main, None)),
+        "0:0..0:7[WARNING]: Name `missing` used when not defined",
+    );
+
+    Ok(())
+}
 
 /// Test that we can initialize multiple workspace folders.
 #[test]
@@ -24,7 +42,7 @@ fn initialize_multiple_workspace_folders() -> Result<()> {
     let root2 = SystemPath::new("root2");
     let mut server = TestServerBuilder::new()?
         .with_initialization_options(
-            ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
+            &ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
         )
         .with_file(root1.join("main.py"), "does_not_exist()")?
         .with_file(root2.join("main.py"), "does_not_exist()")?
@@ -54,7 +72,7 @@ fn add_workspace_folder_after_init() -> Result<()> {
     let root2 = SystemPath::new("root2");
     let mut server = TestServerBuilder::new()?
         .with_initialization_options(
-            ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
+            &ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
         )
         .with_file(root1.join("main.py"), "does_not_exist()")?
         .with_file(root2.join("main.py"), "does_not_exist()")?
@@ -97,7 +115,7 @@ fn add_multiple_workspace_folders() -> Result<()> {
     let root3 = SystemPath::new("root3");
     let mut server = TestServerBuilder::new()?
         .with_initialization_options(
-            ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
+            &ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
         )
         .with_file(root1.join("main.py"), "does_not_exist()")?
         .with_file(root2.join("main.py"), "does_not_exist()")?
@@ -144,7 +162,7 @@ fn remove_workspace_folder_after_init() -> Result<()> {
     let root2 = SystemPath::new("root2");
     let mut server = TestServerBuilder::new()?
         .with_initialization_options(
-            ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
+            &ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
         )
         .with_file(root1.join("main.py"), "does_not_exist()")?
         .with_file(root2.join("main.py"), "does_not_exist()")?
@@ -192,7 +210,7 @@ fn remove_multiple_workspace_folders() -> Result<()> {
     let root3 = SystemPath::new("root3");
     let mut server = TestServerBuilder::new()?
         .with_initialization_options(
-            ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
+            &ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
         )
         .with_file(root1.join("main.py"), "does_not_exist()")?
         .with_file(root2.join("main.py"), "does_not_exist()")?
@@ -248,7 +266,7 @@ fn remove_workspace_folder_with_open_document() -> Result<()> {
     let main2_content = "does_not_exist2()";
 
     let mut server = TestServerBuilder::new()?
-        .with_initialization_options(ClientOptions::default())
+        .with_initialization_options(&ClientOptions::default())
         .with_file(&main1, main1_content)?
         .with_file(&main2, main1_content)?
         .with_workspace(root1, None)?
@@ -295,7 +313,7 @@ fn add_and_remove_workspace_folders() -> Result<()> {
     let root3 = SystemPath::new("root3");
     let mut server = TestServerBuilder::new()?
         .with_initialization_options(
-            ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
+            &ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
         )
         .with_file(root1.join("main.py"), "does_not_exist()")?
         .with_file(root2.join("main.py"), "does_not_exist()")?
@@ -343,7 +361,7 @@ fn add_existing_workspace_folder_is_no_op() -> Result<()> {
     let root1 = SystemPath::new("root1");
     let mut server = TestServerBuilder::new()?
         .with_initialization_options(
-            ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
+            &ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
         )
         .with_file(root1.join("main.py"), "does_not_exist()")?
         .with_workspace(root1, None)?
@@ -378,7 +396,7 @@ fn remove_only_workspace() -> Result<()> {
     let root1 = SystemPath::new("root1");
     let mut server = TestServerBuilder::new()?
         .with_initialization_options(
-            ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
+            &ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
         )
         .with_file(root1.join("main.py"), "does_not_exist()")?
         .with_workspace(root1, None)?
@@ -406,7 +424,7 @@ fn different_settings() -> Result<()> {
 
     let mut server = TestServerBuilder::new()?
         .with_initialization_options(
-            ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
+            &ClientOptions::default().with_diagnostic_mode(DiagnosticMode::Workspace),
         )
         .with_file(&main1, main_content)?
         .with_file(&main2, main_content)?
@@ -567,7 +585,7 @@ fn global_settings_precedence() -> Result<()> {
     // which causes it to take precedence and apply even to root1.
 
     let mut server = TestServerBuilder::new()?
-        .with_initialization_options(ClientOptions::default())
+        .with_initialization_options(&ClientOptions::default())
         .with_file(&main1, main_content)?
         .with_file(&main2, main_content)?
         .with_workspace(root1, None)?
@@ -603,7 +621,7 @@ fn global_settings_precedence() -> Result<()> {
     // winning out, and we get syntax error diagnostics.
 
     let mut server = TestServerBuilder::new()?
-        .with_initialization_options(ClientOptions::default())
+        .with_initialization_options(&ClientOptions::default())
         .with_file(&main1, main_content)?
         .with_file(&main2, main_content)?
         .with_workspace(
@@ -652,7 +670,7 @@ fn global_settings_change() -> Result<()> {
     // we get syntax error diagnostics.
 
     let mut server = TestServerBuilder::new()?
-        .with_initialization_options(ClientOptions::default())
+        .with_initialization_options(&ClientOptions::default())
         .with_file(&main1, main_content)?
         .with_file(&main2, main_content)?
         .with_workspace(root1, None)?
@@ -705,24 +723,26 @@ fn global_settings_change() -> Result<()> {
 /// LSP is correctly recognizing and reporting diagnostics for each
 /// workspace folder. This isn't really meant to test the diagnostics
 /// themselves, hence the condensed output.
-fn condensed_workspace_diagnostic_snapshot(report: WorkspaceDiagnosticReportResult) -> String {
-    let items = match report {
-        WorkspaceDiagnosticReportResult::Report(WorkspaceDiagnosticReport { items }) => items,
-        WorkspaceDiagnosticReportResult::Partial(WorkspaceDiagnosticReportPartialResult {
-            items,
-        }) => items,
-    };
+pub(crate) fn condensed_workspace_diagnostic_snapshot(
+    mut report: WorkspaceDiagnosticReport,
+) -> String {
+    sort_workspace_diagnostic_response(&mut report);
+    let items = report.items;
     items
         .into_iter()
         .map(|item| match item {
-            WorkspaceDocumentDiagnosticReport::Full(doc_report) => {
+            WorkspaceDocumentDiagnosticReport::WorkspaceFullDocumentDiagnosticReport(
+                doc_report,
+            ) => {
                 let diagnostics = condensed_full_document_diagnostic_report(
                     doc_report.full_document_diagnostic_report,
                 )
                 .join("\n\t");
                 format!("{}\n\t{diagnostics}", doc_report.uri)
             }
-            WorkspaceDocumentDiagnosticReport::Unchanged(doc_report) => {
+            WorkspaceDocumentDiagnosticReport::WorkspaceUnchangedDocumentDiagnosticReport(
+                doc_report,
+            ) => {
                 format!("{}\n\tUNCHANGED", doc_report.uri)
             }
         })
@@ -730,21 +750,18 @@ fn condensed_workspace_diagnostic_snapshot(report: WorkspaceDiagnosticReportResu
         .join("\n")
 }
 
-pub(crate) fn condensed_document_diagnostic_snapshot(
-    report: DocumentDiagnosticReportResult,
-) -> String {
+pub(crate) fn condensed_document_diagnostic_snapshot(report: DocumentDiagnosticReport) -> String {
     match report {
-        DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(full)) => {
+        DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(full) => {
             condensed_full_document_diagnostic_report(full.full_document_diagnostic_report)
                 .join("\n")
         }
         // NOTE: It might be worth providing more details for these
         // cases, but I don't think there's currently a use case for
         // it.
-        DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Unchanged(_)) => {
+        DocumentDiagnosticReport::RelatedUnchangedDocumentDiagnosticReport(_) => {
             "UNCHANGED".to_string()
         }
-        DocumentDiagnosticReportResult::Partial(_) => "PARTIAL".to_string(),
     }
 }
 
@@ -761,13 +778,19 @@ fn condensed_full_document_diagnostic_report(report: FullDocumentDiagnosticRepor
                 end_char = d.range.end.character,
             );
             let severity = match d.severity {
-                Some(DiagnosticSeverity::ERROR) => "ERROR",
-                Some(DiagnosticSeverity::WARNING) => "WARNING",
-                Some(DiagnosticSeverity::INFORMATION) => "INFORMATION",
-                Some(DiagnosticSeverity::HINT) => "HINT",
-                None | Some(_) => "unknown",
+                Some(DiagnosticSeverity::Error) => "ERROR",
+                Some(DiagnosticSeverity::Warning) => "WARNING",
+                Some(DiagnosticSeverity::Information) => "INFORMATION",
+                Some(DiagnosticSeverity::Hint) => "HINT",
+                Some(DiagnosticSeverity::Custom(_)) | None => "unknown",
             };
-            format!("{range}[{severity}]: {message}", message = d.message)
+            let Message::String(message) = d.message else {
+                panic!(
+                    "Only string-type diagnostic messages supported, got: {:?}",
+                    d.message
+                );
+            };
+            format!("{range}[{severity}]: {message}")
         })
         .collect()
 }
@@ -787,7 +810,7 @@ fn condensed_full_document_diagnostic_report(report: FullDocumentDiagnosticRepor
 /// expect to never have a response for.
 fn get_expected_empty_workspace_diagnostics_and_shutdown(
     mut server: TestServer,
-) -> WorkspaceDiagnosticReportResult {
+) -> WorkspaceDiagnosticReport {
     let request_id = send_workspace_diagnostic_request(&mut server);
     assert_workspace_diagnostics_suspends_for_long_polling(&mut server, &request_id);
     shutdown_and_await_workspace_diagnostic(server, &request_id)

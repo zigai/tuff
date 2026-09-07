@@ -140,7 +140,7 @@ impl PyFormatOptions {
         self.source_type
     }
 
-    pub const fn source_map_generation(&self) -> SourceMapGeneration {
+    pub(crate) const fn source_map_generation(&self) -> SourceMapGeneration {
         self.source_map_generation
     }
 
@@ -288,7 +288,7 @@ pub enum QuoteStyle {
 }
 
 impl QuoteStyle {
-    pub const fn is_preserve(self) -> bool {
+    pub(crate) const fn is_preserve(self) -> bool {
         matches!(self, QuoteStyle::Preserve)
     }
 
@@ -335,7 +335,7 @@ pub enum MagicTrailingComma {
 }
 
 impl MagicTrailingComma {
-    pub const fn is_respect(self) -> bool {
+    pub(crate) const fn is_respect(self) -> bool {
         matches!(self, Self::Respect)
     }
 
@@ -402,7 +402,7 @@ pub enum NestedStringQuoteStyle {
 }
 
 impl NestedStringQuoteStyle {
-    pub const fn is_preferred(self) -> bool {
+    pub(crate) const fn is_preferred(self) -> bool {
         matches!(self, NestedStringQuoteStyle::Preferred)
     }
 }
@@ -428,7 +428,7 @@ pub enum DocstringCode {
 }
 
 impl DocstringCode {
-    pub const fn is_enabled(self) -> bool {
+    pub(crate) const fn is_enabled(self) -> bool {
         matches!(self, DocstringCode::Enabled)
     }
 }

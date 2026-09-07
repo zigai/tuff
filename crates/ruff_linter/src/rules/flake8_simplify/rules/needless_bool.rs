@@ -6,6 +6,7 @@ use ruff_python_semantic::analyze::typing::{is_sys_version_block, is_type_checki
 use ruff_text_size::{Ranged, TextRange};
 
 use crate::checkers::ast::Checker;
+use crate::codes::Category;
 use crate::fix::snippet::SourceCodeSnippet;
 use crate::{Edit, Fix, FixAvailability, Violation};
 
@@ -56,7 +57,7 @@ use crate::{Edit, Fix, FixAvailability, Violation};
 /// ## References
 /// - [Python documentation: Truth Value Testing](https://docs.python.org/3/library/stdtypes.html#truth-value-testing)
 #[derive(ViolationMetadata)]
-#[violation_metadata(stable_since = "v0.0.214")]
+#[violation_metadata(stable_since = "v0.0.214", category = Category::Complexity)]
 pub(crate) struct NeedlessBool {
     condition: Option<SourceCodeSnippet>,
     negate: bool,
@@ -284,11 +285,11 @@ pub(crate) fn needless_bool(checker: &Checker, stmt: &Stmt) {
                 func: Box::new(func_node.into()),
                 arguments: Arguments {
                     args: Box::from([if_test.clone()]),
-                    keywords: Box::from([]),
+                    keywords: std::iter::empty().collect(),
                     range: TextRange::default(),
                     node_index: ruff_python_ast::AtomicNodeIndex::NONE,
                 },
-                range: TextRange::default(),
+                range_start: ruff_text_size::TextSize::default(),
                 node_index: ruff_python_ast::AtomicNodeIndex::NONE,
             };
             Some(Expr::Call(call_node))

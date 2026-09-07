@@ -328,6 +328,18 @@ impl TokenKind {
         matches!(self, TokenKind::EndOfFile)
     }
 
+    /// Returns `true` if this is a dot token (`.`).
+    #[inline]
+    pub const fn is_dot(self) -> bool {
+        matches!(self, TokenKind::Dot)
+    }
+
+    /// Returns `true` if this is a left brace token (`{`).
+    #[inline]
+    pub const fn is_lbrace(self) -> bool {
+        matches!(self, TokenKind::Lbrace)
+    }
+
     /// Returns `true` if this is either a newline or non-logical newline token.
     #[inline]
     pub const fn is_any_newline(self) -> bool {
@@ -759,6 +771,8 @@ bitflags! {
         const RAW_STRING_UPPERCASE = 1 << 7;
         /// String without matching closing quote(s)
         const UNCLOSED_STRING = 1 << 8;
+        /// The token is a name containing at least one non-ASCII codepoint.
+        const NON_ASCII_NAME = 1 << 9;
 
         /// The token is a raw string i.e., prefixed with `r` or `R`
         const RAW_STRING = Self::RAW_STRING_LOWERCASE.bits() | Self::RAW_STRING_UPPERCASE.bits();
@@ -851,5 +865,11 @@ impl TokenFlags {
     /// Returns `true` if the token is a raw string.
     pub const fn is_raw_string(self) -> bool {
         self.intersects(TokenFlags::RAW_STRING)
+    }
+
+    /// Returns `true` if the token is a name containing at least one non-ASCII codepoint.
+    #[inline]
+    pub const fn is_non_ascii_name(self) -> bool {
+        self.intersects(TokenFlags::NON_ASCII_NAME)
     }
 }

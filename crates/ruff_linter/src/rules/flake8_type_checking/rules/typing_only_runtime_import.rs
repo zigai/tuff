@@ -8,7 +8,7 @@ use ruff_python_semantic::{Binding, Imported, NodeId, Scope};
 use ruff_text_size::{Ranged, TextRange};
 
 use crate::checkers::ast::{Checker, DiagnosticGuard};
-use crate::codes::Rule;
+use crate::codes::{Category, Rule};
 use crate::fix;
 use crate::importer::ImportedMembers;
 use crate::rules::flake8_type_checking::helpers::{
@@ -82,7 +82,7 @@ use crate::{Fix, FixAvailability, Violation};
 /// ## References
 /// - [PEP 563: Runtime annotation resolution and `TYPE_CHECKING`](https://peps.python.org/pep-0563/#runtime-annotation-resolution-and-type-checking)
 #[derive(ViolationMetadata)]
-#[violation_metadata(stable_since = "0.8.0")]
+#[violation_metadata(stable_since = "0.8.0", category = Category::Pedantic)]
 pub(crate) struct TypingOnlyFirstPartyImport {
     qualified_name: String,
 }
@@ -165,7 +165,7 @@ impl Violation for TypingOnlyFirstPartyImport {
 /// ## References
 /// - [PEP 563: Runtime annotation resolution and `TYPE_CHECKING`](https://peps.python.org/pep-0563/#runtime-annotation-resolution-and-type-checking)
 #[derive(ViolationMetadata)]
-#[violation_metadata(stable_since = "0.8.0")]
+#[violation_metadata(stable_since = "0.8.0", category = Category::Pedantic)]
 pub(crate) struct TypingOnlyThirdPartyImport {
     qualified_name: String,
 }
@@ -248,7 +248,7 @@ impl Violation for TypingOnlyThirdPartyImport {
 /// ## References
 /// - [PEP 563: Runtime annotation resolution and `TYPE_CHECKING`](https://peps.python.org/pep-0563/#runtime-annotation-resolution-and-type-checking)
 #[derive(ViolationMetadata)]
-#[violation_metadata(stable_since = "0.8.0")]
+#[violation_metadata(stable_since = "0.8.0", category = Category::Pedantic)]
 pub(crate) struct TypingOnlyStandardLibraryImport {
     qualified_name: String,
 }
@@ -396,6 +396,10 @@ pub(crate) fn typing_only_runtime_import(
 
     // Generate a diagnostic for every import, but share a fix across all imports within the same
     // statement (excluding those that are ignored).
+    #[expect(
+        clippy::iter_over_hash_type,
+        reason = "each statement group produces diagnostics and a fix independently"
+    )]
     for ((node_id, import_type), imports) in errors_by_statement {
         let fix = fix_imports(checker, node_id, &imports).ok();
 
@@ -423,6 +427,10 @@ pub(crate) fn typing_only_runtime_import(
 
     // Separately, generate a diagnostic for every _ignored_ import, to ensure that the
     // suppression comments aren't marked as unused.
+    #[expect(
+        clippy::iter_over_hash_type,
+        reason = "each ignored statement group produces diagnostics independently"
+    )]
     for ((_, import_type), imports) in ignores_by_statement {
         for ImportBinding {
             import,

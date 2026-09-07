@@ -4,7 +4,10 @@ use anyhow::Result;
 use ruff_linter::source_kind::SourceKind;
 use ruff_notebook::Notebook;
 use ruff_python_ast::{PySourceType, SourceType};
-use ruff_python_formatter::{DocstringCodeLineWidth as RuffDocstringCodeLineWidth, QuoteStyle};
+use ruff_python_formatter::{
+    DocstringCode as RuffDocstringCode, DocstringCodeLineWidth as RuffDocstringCodeLineWidth,
+    QuoteStyle,
+};
 use ruff_source_file::find_newline;
 use ruff_text_size::TextRange;
 use ruff_workspace::FormatterSettings;
@@ -162,10 +165,9 @@ fn format_options(
         "preferred" => NestedStringQuoteStyle::Preferred,
         _ => NestedStringQuoteStyle::Alternating,
     };
-    let docstring_code = if settings.docstring_code_format.is_enabled() {
-        DocstringCode::Enabled
-    } else {
-        DocstringCode::Disabled
+    let docstring_code = match settings.docstring_code_format {
+        RuffDocstringCode::Enabled => DocstringCode::Enabled,
+        RuffDocstringCode::Disabled => DocstringCode::Disabled,
     };
     let docstring_code_line_width = match settings.docstring_code_line_width {
         RuffDocstringCodeLineWidth::Fixed(line_width) => DocstringCodeLineWidth::Fixed(line_width),

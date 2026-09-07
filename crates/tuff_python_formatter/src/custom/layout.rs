@@ -281,6 +281,10 @@ fn alignment_group_ranges(
     map: &FxHashMap<TextRange, AlignmentDecision>,
 ) -> FxHashMap<AlignmentGroupId, Vec<TextRange>> {
     let mut group_ranges: FxHashMap<AlignmentGroupId, Vec<TextRange>> = FxHashMap::default();
+    #[expect(
+        clippy::iter_over_hash_type,
+        reason = "group members are only checked for range containment, so their order is irrelevant"
+    )]
     for (target_range, decision) in map {
         group_ranges
             .entry(decision.group_id)

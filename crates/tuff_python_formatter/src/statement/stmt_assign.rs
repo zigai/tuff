@@ -12,8 +12,7 @@ use crate::context::{NodeLevel, WithNodeLevel};
 use crate::custom::hooks::{self, AssignmentSubject};
 use crate::expression::expr_lambda::ExprLambdaLayout;
 use crate::expression::parentheses::{
-    NeedsParentheses, OptionalParentheses, Parentheses, Parenthesize, is_expression_parenthesized,
-    optional_parentheses,
+    NeedsParentheses, OptionalParentheses, Parentheses, Parenthesize, optional_parentheses,
 };
 use crate::expression::{
     can_omit_optional_parentheses, has_own_parentheses, has_parentheses,
@@ -75,11 +74,7 @@ impl FormatNodeRule<StmtAssign> for FormatStmtAssign {
         // Avoid parenthesizing the value for single-target assignments where the
         // target has its own parentheses (list, dict, tuple, ...) and the target expands.
         else if has_target_own_parentheses(first, f.context())
-            && !is_expression_parenthesized(
-                first.into(),
-                f.context().comments().ranges(),
-                f.context().source(),
-            )
+            && !f.context().is_expression_parenthesized(first.into())
         {
             FormatStatementsLastExpression::RightToLeft {
                 before_operator: AnyBeforeOperator::Expression(first),
@@ -1345,7 +1340,7 @@ pub(super) fn has_target_own_parentheses(target: &Expr, context: &PyFormatContex
     matches!(target, Expr::Tuple(_)) || has_own_parentheses(target, context).is_some()
 }
 
-pub(super) fn should_parenthesize_target(target: &Expr, context: &PyFormatContext) -> bool {
+fn should_parenthesize_target(target: &Expr, context: &PyFormatContext) -> bool {
     !(has_target_own_parentheses(target, context)
         || is_attribute_with_parenthesized_value(target, context))
 }

@@ -1,9 +1,10 @@
 use anyhow::Result;
-use lsp_types::notification::DidOpenTextDocument;
-use lsp_types::request::InlayHintRequest;
+use lsp_types::DidOpenTextDocumentNotification;
+use lsp_types::InlayHintRequest;
+use lsp_types::LanguageKind;
 use lsp_types::{
     DidOpenTextDocumentParams, InlayHintParams, Position, Range, TextDocumentIdentifier,
-    TextDocumentItem, Url, WorkDoneProgressParams,
+    TextDocumentItem, Uri, WorkDoneProgressParams,
 };
 use ruff_db::system::SystemPath;
 use ty_server::ClientOptions;
@@ -17,16 +18,16 @@ fn default_inlay_hints() -> Result<()> {
     let workspace_root = SystemPath::new("src");
     let foo = SystemPath::new("src/foo.py");
     let foo_content = "\
-x = 1
+class Thing: ...
 
-def foo(a: int) -> int:
-    return a + 1
+def foo(a: Thing) -> Thing:
+    return a
 
-y = foo(1)
+y = foo(Thing())
 ";
 
     let mut server = TestServerBuilder::new()?
-        .with_initialization_options(ClientOptions::default())
+        .with_initialization_options(&ClientOptions::default())
         .with_workspace(workspace_root, None)?
         .with_file(foo, foo_content)?
         .enable_inlay_hints(true)
@@ -51,17 +52,17 @@ y = foo(1)
             "value": ": "
           },
           {
-            "value": "int",
+            "value": "Thing",
             "location": {
-              "uri": "file://<typeshed>/stdlib/builtins.pyi",
+              "uri": "file://<temp_dir>/src/foo.py",
               "range": {
                 "start": {
-                  "line": 343,
+                  "line": 0,
                   "character": 6
                 },
                 "end": {
-                  "line": 343,
-                  "character": 9
+                  "line": 0,
+                  "character": 11
                 }
               }
             }
@@ -80,7 +81,7 @@ y = foo(1)
                 "character": 1
               }
             },
-            "newText": ": int"
+            "newText": ": Thing"
           }
         ]
       },
@@ -142,7 +143,7 @@ fn variable_inlay_hints_disabled() -> Result<()> {
 
     let mut server = TestServerBuilder::new()?
         .with_initialization_options(
-            ClientOptions::default().with_variable_types_inlay_hints(false),
+            &ClientOptions::default().with_variable_types_inlay_hints(false),
         )
         .with_workspace(workspace_root, None)?
         .with_file(foo, foo_content)?
@@ -181,12 +182,12 @@ fn variable_inlay_hints_disabled_for_virtual_file() -> Result<()> {
         .wait_until_workspaces_are_initialized();
 
     let file_uri = server.file_uri(file);
-    let virtual_uri = Url::parse(&format!("untitled://{}", file_uri.path())).unwrap();
+    let virtual_uri = Uri::parse(&format!("untitled://{}", file_uri.path())).unwrap();
 
-    server.send_notification::<DidOpenTextDocument>(DidOpenTextDocumentParams {
+    server.send_notification::<DidOpenTextDocumentNotification>(DidOpenTextDocumentParams {
         text_document: TextDocumentItem {
             uri: virtual_uri.clone(),
-            language_id: "python".to_string(),
+            language_id: LanguageKind::Python,
             version: 1,
             text: content.to_string(),
         },
@@ -228,7 +229,7 @@ def get_a() -> A:
 ";
 
     let mut server = TestServerBuilder::new()?
-        .with_initialization_options(ClientOptions::default())
+        .with_initialization_options(&ClientOptions::default())
         .with_workspace(workspace_root, None)?
         .with_file(foo, foo_content)?
         .with_file(bar, bar_content)?

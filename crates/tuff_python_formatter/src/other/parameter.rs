@@ -1,5 +1,4 @@
 use crate::custom::hooks::{self, AnnotationSubject};
-use crate::expression::parentheses::is_expression_parenthesized;
 use crate::prelude::*;
 use ruff_python_ast::Parameter;
 
@@ -22,11 +21,7 @@ impl FormatNodeRule<Parameter> for FormatParameter {
             hooks::after_annotation_colon(f, AnnotationSubject::FunctionParameter(item))?;
 
             if f.context().comments().has_leading(annotation)
-                && !is_expression_parenthesized(
-                    annotation.into(),
-                    f.context().comments().ranges(),
-                    f.context().source(),
-                )
+                && !f.context().is_expression_parenthesized(annotation.into())
             {
                 hard_line_break().fmt(f)?;
             } else {
