@@ -2,6 +2,22 @@
 
 Tuff is a fork of [Ruff](https://github.com/astral-sh/ruff) that provides extra Python formatting options.
 
+## Install
+
+With Rust and Cargo installed:
+
+```sh
+cargo install --git https://github.com/zigai/pyfmt.git --locked --bin tuff ruff
+```
+
+## Use
+
+```sh
+tuff format .
+```
+
+## Formatting options
+
 Currently added formatting options:
 
 | Option                     | Description                                        |
