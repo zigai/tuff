@@ -233,6 +233,38 @@ class Foo4[**P]:
         self.kwargs: P.kwargs = kwargs
 ```
 
+## Class `ParamSpec` bindings remain visible in nested classes
+
+A PEP 695 `ParamSpec` remains bound to the class that declares it when referenced in a nested
+class's method. Both callable annotations and forwarded arguments use the outer class's binding.
+
+```py
+from typing import Callable
+
+class Outer[**P]:
+    class Inner:
+        def method(self, callback: Callable[P, int], *args: P.args, **kwargs: P.kwargs) -> int:
+            return callback(*args, **kwargs)
+
+# revealed: def method(self, callback: (**P@Outer) -> int, *args: P@Outer.args, **kwargs: P@Outer.kwargs) -> int
+reveal_type(Outer.Inner.method)
+```
+
+## Class `ParamSpec` bindings across intervening methods
+
+A PEP 695 `ParamSpec` binding remains visible through an intervening method that captures it through
+its components.
+
+```py
+class Outer[**P]:
+    def method(self, *args: P.args, **kwargs: P.kwargs) -> None:
+        class Inner:
+            def nested(self, *args: P.args, **kwargs: P.kwargs) -> None: ...
+
+        # revealed: def nested(self, *args: P@Outer.args, **kwargs: P@Outer.kwargs) -> None
+        reveal_type(Inner.nested)
+```
+
 ## Semantics of `P.args` and `P.kwargs`
 
 The type of `args` and `kwargs` inside the function is `P.args` and `P.kwargs` respectively instead
@@ -966,7 +998,7 @@ to_thread_like(
 to_thread_like(
     generic_pair_with_container,
     1,
-    reveal_type([""]),  # revealed: list[Literal[1] | str]
+    reveal_type([""]),  # revealed: list[int | str]
 )
 ```
 
@@ -988,8 +1020,7 @@ def _(payload: Payload):
 
 def triple[T](first: T, second: T, third: T) -> None: ...
 def _(payload: Payload, unknown: Unknown):
-    # TODO: This should reveal `Payload`.
-    forward(triple, reveal_type({"x": 1}), payload, unknown)  # revealed: dict[str, int]
+    forward(triple, reveal_type({"x": 1}), payload, unknown)  # revealed: Payload
 ```
 
 We use a type-variable default as type context when the forwarded arguments do not otherwise
@@ -999,6 +1030,101 @@ constrain it:
 def default[T = Callable[[int], int]](callback: T) -> None: ...
 
 forward(default, lambda x: reveal_type(x))  # revealed: int
+```
+
+### Forwarded arguments with type-variable bounds
+
+When a type variable is bounded by `LiteralString`, string literals are not promoted to `str` when
+providing context for other arguments. This applies to ordinary calls and calls forwarded through a
+`ParamSpec`.
+
+```py
+from typing import Any, Callable, LiteralString
+
+def forward[**P](function: Callable[P, Any], /, *args: P.args, **kwargs: P.kwargs): ...
+def target[T: LiteralString](first: T, values: list[T]) -> None: ...
+
+target("a", ["a"])
+forward(target, "a", ["a"])
+```
+
+### Forwarded callbacks with gradual types
+
+A callback forwarded through a `ParamSpec` receives its own parameter type as context, including
+when its return type is `Any`. Earlier arguments to the wrapped function do not affect the
+callback's parameter types.
+
+```py
+from typing import Any, Callable
+
+def forward[**P](function: Callable[P, Any], /, *args: P.args, **kwargs: P.kwargs): ...
+def target(name: str, callback: Callable[[int], Any]): ...
+
+forward(target, "name", lambda value: reveal_type(value))  # revealed: int
+forward(target, name="name", callback=lambda value: reveal_type(value))  # revealed: int
+```
+
+Gradual parameter types are also preserved alongside concrete parameter types:
+
+```py
+def gradual(name: str, callback: Callable[[Any, int], Any]): ...
+
+forward(gradual, "name", lambda value, count: reveal_type((value, count)))  # revealed: tuple[Any, int]
+```
+
+A gradual parameter list gives each callback parameter the type `Any`:
+
+```py
+def gradual_list(name: str, callback: Callable[..., Any]): ...
+
+gradual_list("name", lambda first, second: reveal_type((first, second)))  # revealed: tuple[Any, Any]
+forward(gradual_list, "name", lambda first, second: reveal_type((first, second)))  # revealed: tuple[Any, Any]
+```
+
+Concrete parameter types also provide context when a callback's return type is unknown:
+
+```py
+from ty_extensions._internal import Unknown
+
+def unknown_return(name: str, callback: Callable[[int], Unknown]): ...
+
+forward(unknown_return, "name", lambda value: reveal_type(value))  # revealed: int
+```
+
+### Forwarded callbacks with unsolved type variables
+
+An unsolved type variable in a callback's return type does not prevent its parameter types from
+providing context.
+
+```py
+from typing import Any, Callable
+
+def forward[**P](function: Callable[P, Any], /, *args: P.args, **kwargs: P.kwargs): ...
+def target[T](name: str, callback: Callable[[int], T]): ...
+
+forward(target, "name", lambda value: reveal_type(value))  # revealed: int
+```
+
+An unsolved callback parameter remains unknown when the other arguments do not constrain it:
+
+```py
+def unsolved[T](name: str, callback: Callable[[T], Any]): ...
+
+forward(unsolved, "name", lambda value: reveal_type(value))  # revealed: Unknown
+```
+
+### Forwarded callbacks in invalid calls
+
+Omitting `name` reports a missing argument without an additional argument-type error for the
+callback.
+
+```py
+from typing import Any, Callable
+
+def forward[**P](function: Callable[P, Any], /, *args: P.args, **kwargs: P.kwargs): ...
+def target(name: str, callback: Callable[[int], Any]): ...
+
+forward(target, callback=lambda value: value)  # error: [missing-argument]
 ```
 
 ### Specializing `ParamSpec` with another `ParamSpec`
@@ -1360,6 +1486,63 @@ info: Overload implementation defined here
    |
 10 |     def make[**P](cls: Callable[P, "Factory"], *args: P.args, **kwargs: P.kwargs) -> "Factory":
    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+### Constructor overrides with receiver-inferred parameters
+
+In the below example, `Base.__new__` takes the same arguments as the class's `build` method. Binding
+its `cls` receiver infers an `int` parameter from `Base.build`, so an override accepting only `str`
+is incompatible.
+
+```py
+from __future__ import annotations
+from typing import Protocol, Self, override
+
+class Builder[**P](Protocol):
+    def build(self, *args: P.args, **kwargs: P.kwargs) -> object: ...
+
+class Base:
+    @staticmethod
+    def build(value: int) -> object:
+        return object()
+
+    def __new__[**P](cls: Builder[P], *args: P.args, **kwargs: P.kwargs) -> Base:
+        raise NotImplementedError
+
+class Invalid(Base):
+    @override
+    def __new__(cls, value: str) -> Self:  # error: [invalid-method-override]
+        raise NotImplementedError
+```
+
+### Wrapped classmethod factories passed to callbacks
+
+A classmethod can use a callable instance to forward arguments to the class constructor. Passing
+this factory to `asyncio.to_thread` infers the constructor's parameters and its instance type from
+the captured class. The `to_thread` definition below is based on typeshed's stub.
+
+```py
+from typing import Callable, ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+async def to_thread(func: Callable[P, R], /, *args: P.args, **kwargs: P.kwargs) -> R:
+    raise NotImplementedError
+
+class Factory:
+    def __call__[**P, R](self, cls: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> R:
+        return cls(*args, **kwargs)
+
+class C:
+    def __init__(self, value: int, *, label: str = "") -> None: ...
+    make = classmethod(Factory())
+
+async def check():
+    reveal_type(await to_thread(C.make, 1, label="label"))  # revealed: C
+    await to_thread(C.make)  # error: [missing-argument] "No argument provided for required parameter `value`"
+    await to_thread(C.make, "wrong")  # error: [invalid-argument-type] "Expected `int`"
+    await to_thread(C.make, 1, label=2)  # error: [invalid-argument-type] "Expected `str`"
 ```
 
 ### Gradual types propagate through `ParamSpec` inference

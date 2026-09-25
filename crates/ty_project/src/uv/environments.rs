@@ -75,7 +75,7 @@ use parking_lot::Mutex;
 use ruff_cache::{CacheKey, CacheKeyHasher};
 use ruff_db::FxDashMap;
 use ruff_db::cancellation::CancellationTokenSource;
-use ruff_db::files::{File, Files};
+use ruff_db::files::File;
 use ruff_db::system::{SystemPath, SystemPathBuf};
 use salsa::Setter;
 
@@ -712,32 +712,10 @@ fn apply_sync_result(
     request: &ScriptSyncRequest,
     output: std::io::Result<std::process::Output>,
 ) {
-    let previous_root = environment
-        .uv_metadata(db)
-        .and_then(UvMetadata::environment)
-        .map(ToOwned::to_owned);
-    let recovering_from_error = environment.initialization_error(db).is_some();
     let (uv_metadata, initialization_error) = match Uv::parse_metadata_output(db.system(), output) {
         Ok(metadata) => (Some(metadata), None),
         Err(error) => (None, Some(error.to_string().into_boxed_str())),
     };
-    let current_root = uv_metadata.as_ref().and_then(UvMetadata::environment);
-
-    if let Some(root) = previous_root
-        .as_deref()
-        .or_else(|| current_root.filter(|_| recovering_from_error))
-    {
-        // uv can install, update, or remove packages without changing the virtual-environment path.
-        // Refresh files under that path so semantic queries see the updated package contents.
-        // After a failed synchronization, recover the path from the new metadata because the
-        // previous metadata was cleared along with its virtual-environment path.
-        //
-        // FIXME: This is overbroad. A file watcher can tell us precisely what changed.
-        // Changes inside virtual environments should instead be watched and processed through `ProjectDatabase::apply_changes`.
-        // Using a file watcher also ensures that virtual environment changes in
-        // scripts without using uv are detected.
-        Files::sync_all_recursive(db, [root]);
-    }
 
     if environment.uv_metadata(db) != uv_metadata.as_ref() {
         environment.set_uv_metadata(db).to(uv_metadata);
@@ -960,7 +938,7 @@ mod tests {
 
         use super::super::{ScriptEnvironmentAvailability, UvSyncChanges, script_environment};
         use crate::db::testing::TestDb;
-        use crate::{Db as _, ProjectMetadata, UseUv};
+        use crate::{Db as _, ProjectMetadata, UseUv, uv_test_env_vars};
 
         #[test]
         fn newer_project_refresh_discards_old_metadata() -> anyhow::Result<()> {
@@ -1248,6 +1226,8 @@ mod tests {
 
             fn sync_workspace(&self) -> anyhow::Result<()> {
                 let output = Command::new(self.db.test_system().env_var(EnvVars::UV)?)
+                    .env_clear()
+                    .envs(uv_test_env_vars())
                     .current_dir(self.db.project().root(&self.db))
                     .args(["sync", "--offline"])
                     .output()?;
@@ -1277,6 +1257,8 @@ mod tests {
                     root.join("bin/python")
                 };
                 let output = Command::new(python.as_std_path())
+                    .env_clear()
+                    .envs(uv_test_env_vars())
                     .args(["-c", &format!("import {module}")])
                     .output()?;
 
@@ -1298,18 +1280,11 @@ mod tests {
                 let metadata = ProjectMetadata::new("test", root.clone()).with_use_uv(use_uv);
                 let mut db = TestDb::new(metadata);
                 db.use_system(OsSystem::new(&root));
+                db.test_system().clear_env_vars();
+                db.test_system().set_env_vars(uv_test_env_vars());
 
                 let uv = OsSystem::default().which("uv")?;
                 db.test_system().set_env_var(EnvVars::UV, uv.as_str());
-                for name in [
-                    EnvVars::VIRTUAL_ENV,
-                    EnvVars::CONDA_PREFIX,
-                    EnvVars::CONDA_DEFAULT_ENV,
-                    EnvVars::CONDA_ROOT,
-                    EnvVars::PYTHONPATH,
-                ] {
-                    db.test_system().remove_env_var(name);
-                }
 
                 let path = root.join(file_name);
                 db.write_dedented(path.as_str(), source)?;

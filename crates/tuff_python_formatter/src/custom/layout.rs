@@ -2065,9 +2065,8 @@ fn walk_expression(expr: &Expr, visit: &mut impl FnMut(&Expr)) {
         }
         Expr::YieldFrom(expr) => walk_expression(&expr.value, visit),
         Expr::Compare(expr) => {
-            walk_expression(&expr.left, visit);
-            for comparator in &expr.comparators {
-                walk_expression(comparator, visit);
+            for operand in &expr.operands {
+                walk_expression(operand, visit);
             }
         }
         Expr::Call(expr) => {
