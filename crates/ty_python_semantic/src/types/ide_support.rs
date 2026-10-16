@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -149,9 +148,6 @@ pub struct ImplementationsFinder<'a> {
     /// Classes whose known subclasses should be scanned for additional implementations.
     roots: FxHashSet<ClassLiteral<'a>>,
 
-    /// Text prefilter for the class keyword or member name, reused across files.
-    name_matcher: Cow<'a, NameMatcher<'a>>,
-
     /// Whether scanning should return subclass definitions or same-named members on subclasses.
     kind: ImplementationsFinderKind<'a>,
 }
@@ -160,6 +156,7 @@ enum ImplementationsFinderKind<'a> {
     ClassFamily,
     MemberFamily {
         name: &'a str,
+        name_matcher: Box<NameMatcher<'a>>,
         accessor_role: Option<PropertyAccessorRole>,
     },
 }
@@ -180,7 +177,6 @@ impl<'a> ImplementationsFinder<'a> {
         Self {
             initial_definitions,
             roots: roots.into_iter().collect(),
-            name_matcher: Cow::Borrowed(&CLASS_MATCHER),
             kind: ImplementationsFinderKind::ClassFamily,
         }
     }
@@ -219,9 +215,9 @@ impl<'a> ImplementationsFinder<'a> {
         Some(Self {
             initial_definitions,
             roots: family_roots,
-            name_matcher: Cow::Owned(NameMatcher::new(member_name)),
             kind: ImplementationsFinderKind::MemberFamily {
                 name: member_name,
+                name_matcher: Box::new(NameMatcher::new(member_name)),
                 accessor_role,
             },
         })
@@ -233,7 +229,17 @@ impl<'a> ImplementationsFinder<'a> {
         db: &'scan dyn Db,
         file: ProgramFile<'scan>,
     ) -> Vec<ResolvedDefinition<'scan>> {
-        if !self.name_matcher.may_match(&source_text(db, file.file(db))) {
+        let source = source_text(db, file.file(db));
+
+        // Member implementations must mention the member name.
+        if let ImplementationsFinderKind::MemberFamily { name_matcher, .. } = &self.kind
+            && !name_matcher.may_match(&source)
+        {
+            return Vec::new();
+        }
+
+        // Both class and member searches look for implementations in class definitions.
+        if !CLASS_MATCHER.may_match(&source) {
             return Vec::new();
         }
 
@@ -245,6 +251,7 @@ impl<'a> ImplementationsFinder<'a> {
             ImplementationsFinderKind::MemberFamily {
                 name,
                 accessor_role,
+                ..
             } => member_implementations_for_file(db, file, roots, name, *accessor_role),
         }
     }
@@ -477,12 +484,6 @@ fn member_implementations_for_file<'db>(
     accessor_role: Option<PropertyAccessorRole>,
 ) -> Vec<ResolvedDefinition<'db>> {
     let mut definitions = Vec::new();
-
-    // The finder already checked for the member name. An override also requires a class.
-    let source = source_text(db, file.file(db));
-    if !CLASS_MATCHER.may_match(&source) {
-        return definitions;
-    }
 
     for candidate in reachable_class_literals_in_file(db, file) {
         // The implementations selected for the roots were collected during finder preparation.
@@ -1127,10 +1128,8 @@ pub fn call_signature_details<'db>(
         // Use from_arguments_typed so that check_types can infer TypeVar
         // specializations from the actual argument types at this call site.
         let call_arguments =
-            CallArguments::from_arguments_typed(&call_expr.arguments, |splatted_value| {
-                splatted_value
-                    .inferred_type(model)
-                    .unwrap_or(Type::unknown())
+            CallArguments::from_arguments_typed(&call_expr.arguments, |expression| {
+                expression.inferred_type(model)
             });
         let mut bindings =
             callable_type
@@ -1175,10 +1174,8 @@ fn resolve_single_overload<'db>(
     let env = &model.program_environment();
     let bindings = callable_type.bindings(db, env);
 
-    let args = CallArguments::from_arguments_typed(&call_expr.arguments, |splatted_value| {
-        splatted_value
-            .inferred_type(model)
-            .unwrap_or(Type::unknown())
+    let args = CallArguments::from_arguments_typed(&call_expr.arguments, |expression| {
+        expression.inferred_type(model)
     });
 
     let constraints = ConstraintSetBuilder::new();
@@ -1221,12 +1218,9 @@ fn full_type_bindings_for_call<'db>(
 ) -> crate::types::call::Bindings<'db> {
     let db = model.db();
     let env = &model.program_environment();
-    let call_arguments =
-        CallArguments::from_arguments_typed(&call_expr.arguments, |splatted_value| {
-            splatted_value
-                .inferred_type(model)
-                .unwrap_or(Type::unknown())
-        });
+    let call_arguments = CallArguments::from_arguments_typed(&call_expr.arguments, |expression| {
+        expression.inferred_type(model)
+    });
     let constraints = ConstraintSetBuilder::new();
 
     func_type
@@ -1564,10 +1558,8 @@ pub fn resolved_call_signature<'db>(
     let env = &model.program_environment();
     let callable_type = func_type.try_upcast_to_callable(db, env)?.to_type(db, env);
 
-    let args = CallArguments::from_arguments_typed(&call_expr.arguments, |splatted_value| {
-        splatted_value
-            .inferred_type(model)
-            .unwrap_or(Type::unknown())
+    let args = CallArguments::from_arguments_typed(&call_expr.arguments, |expression| {
+        expression.inferred_type(model)
     });
 
     // Extract the `Bindings` regardless of whether type checking succeeded or failed.

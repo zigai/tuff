@@ -113,6 +113,7 @@ impl ProjectionTypeBudget {
 
 impl<'db> ConstraintSet<'db, '_> {
     /// Computes default solutions for each BDD path within the default projection budget.
+    /// Constraints on non-inferable typevars are not necessarily retained in the solutions.
     pub(crate) fn solutions(
         self,
         db: &'db dyn Db,
@@ -125,9 +126,7 @@ impl<'db> ConstraintSet<'db, '_> {
             env,
             inferable,
             SolutionBudget::default(),
-            |_variance, path_bound| {
-                CandidateSolutions::default_solve(db, env, builder, inferable, path_bound)
-            },
+            |_variance, path_bound| CandidateSolutions::default_solve(db, env, builder, path_bound),
         )
     }
 
@@ -154,6 +153,9 @@ impl<'db> ConstraintSet<'db, '_> {
     /// The selector receives the typevar's variance and explicit lower and upper bounds. Its
     /// outcome distinguishes missing evidence, invalid paths, and exhausted solution budgets.
     /// The caller is responsible for combining the resulting paths (typically via union).
+    /// Constraints on non-inferable typevars are not necessarily retained in the solutions.
+    /// The selector must preserve the typevar's declared bound: path validation does not
+    /// revalidate an arbitrary type selected afterward.
     ///
     /// Per-variable budget exhaustion preserves available fallback bindings and marks the path
     /// family as [`SolutionPaths::BudgetExceeded`](super::SolutionPaths::BudgetExceeded).
@@ -169,10 +171,10 @@ impl<'db> ConstraintSet<'db, '_> {
     ) -> Result<Solutions<'db>, ProjectionError> {
         let path_bounds = self.bounded_path_bounds(db, env, inferable, budget)?;
         let mut type_budget = ProjectionTypeBudget::new(budget.type_terms);
-        path_bounds.try_solve_with(db, env, choose, |solution| {
+        path_bounds.try_solve_with(choose, |solution| {
             for violation in solution.violations() {
-                if let Some(argument) = violation.argument {
-                    type_budget.charge_type(db, argument)?;
+                for evidence in violation.evidence_types() {
+                    type_budget.charge_type(db, *evidence)?;
                 }
             }
             for binding in &solution.solved_typevars {
@@ -188,7 +190,8 @@ impl<'db> ConstraintSet<'db, '_> {
     /// as [`Self::solutions_with`]. The storage borrow is released before invoking either
     /// callback, so they can safely use the constraint builder. Each call to `fold` receives the
     /// complete bindings for one retained path, including an empty slice for a valid path on
-    /// which no variable was solved.
+    /// which no variable was solved. As with [`Self::solutions_with`], the selector must preserve
+    /// each typevar's declared bound.
     ///
     /// The accumulator is returned only if the entire projection succeeds. `fold` must charge
     /// newly accumulated types to its supplied budget and use bounded constructors for operations
@@ -213,8 +216,6 @@ impl<'db> ConstraintSet<'db, '_> {
         let path_bounds = self.bounded_path_bounds(db, env, inferable, budget)?;
 
         path_bounds.try_fold_with(
-            db,
-            env,
             choose,
             initial,
             &mut ProjectionTypeBudget::new(budget.type_terms),
@@ -226,8 +227,6 @@ impl<'db> ConstraintSet<'db, '_> {
 impl<'db> CandidateSolutions<'db> {
     fn try_fold_with<T>(
         &self,
-        db: &'db dyn Db,
-        env: &ProgramEnvironment<'db>,
         mut choose: impl FnMut(
             TypeVarVariance,
             &CandidateTypeVarSolution<'db>,
@@ -248,9 +247,7 @@ impl<'db> CandidateSolutions<'db> {
 
         let mut retained = false;
         for candidate in candidates {
-            let Some((solution, incomplete)) =
-                Self::solve_path_with(db, env, candidate, &mut choose)
-            else {
+            let Some((solution, incomplete)) = Self::solve_path_with(candidate, &mut choose) else {
                 continue;
             };
             if !solution.is_valid() {

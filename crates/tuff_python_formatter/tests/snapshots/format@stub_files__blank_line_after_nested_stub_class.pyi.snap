@@ -1,5 +1,5 @@
 ---
-source: crates/ruff_python_formatter/tests/fixtures.rs
+source: crates/tuff_python_formatter/tests/fixtures.rs
 input_file: crates/ruff_python_formatter/resources/test/fixtures/ruff/stub_files/blank_line_after_nested_stub_class.pyi
 ---
 ## Input
@@ -201,7 +201,7 @@ magic-trailing-comma       = Respect
 docstring-code             = Disabled
 docstring-code-line-width  = "dynamic"
 preview                    = Enabled
-target_version             = 3.10
+target_version             = 3.11
 source_type                = Stub
 nested-string-quote-style  = alternating
 ```
