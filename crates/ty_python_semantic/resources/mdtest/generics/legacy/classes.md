@@ -160,6 +160,11 @@ class ExplicitInheritedGenericPartiallySpecializedExtraTypevar(MultipleTypevars[
 # error: [invalid-generic-class] "`Generic` base class must include all type variables used in other base classes"
 class ExplicitInheritedGenericPartiallySpecializedMissingTypevar(MultipleTypevars[T, int], Generic[S]): ...
 
+# error: [invalid-generic-class] "`Generic` base class must include all type variables used in other base classes"
+class ExplicitInheritedGenericEmpty(MultipleTypevars[T, S], Generic[()]): ...
+
+reveal_type(generic_context(ExplicitInheritedGenericEmpty))  # revealed: None
+
 # revealed: ty_extensions._internal.GenericContext[T@ExplicitInheritedGeneric, S@ExplicitInheritedGeneric]
 reveal_type(generic_context(ExplicitInheritedGeneric))
 # revealed: ty_extensions._internal.GenericContext[T@ExplicitInheritedGenericPartiallySpecialized]
@@ -1605,6 +1610,95 @@ reveal_type(D(1))  # revealed: D[int]
 # TODO: The revealed type in the error message should be `D[str]`.
 # error: [invalid-assignment] "Object of type `D[str | int]` is not assignable to `D[int]`"
 wrong_innards: D[int] = D("five")
+```
+
+### Type variable defaults across `__new__` and `__init__`
+
+A type variable left unsolved by `__new__` can still be inferred from `__init__`. Its default
+applies only when neither method solves it, including when `__new__` is inherited.
+
+```py
+from typing_extensions import Any, Generic, Self, TypeVar
+
+T = TypeVar("T", default=str)
+
+class Base:
+    def __new__(cls, *args: Any, **kwargs: Any) -> Self:
+        return super().__new__(cls)
+
+class C(Base, Generic[T]):
+    def __init__(self, value: T | None = None) -> None: ...
+
+reveal_type(C(int()))  # revealed: C[int]
+reveal_type(C())  # revealed: C[str]
+reveal_type(C[float](float()))  # revealed: C[float]
+C[str](int())  # error: [invalid-argument-type]
+```
+
+Inferring a gradual type from an argument also takes precedence over the default:
+
+```py
+from ty_extensions._internal import Unknown
+
+def gradual(unknown: Unknown, dynamic: Any):
+    reveal_type(C(unknown))  # revealed: C[Unknown]
+    reveal_type(C(dynamic))  # revealed: C[Any]
+```
+
+The same applies when `__new__` is defined directly and returns the generic class instead of `Self`:
+
+```py
+class Direct(Generic[T]):
+    def __new__(cls, *args: Any, **kwargs: Any) -> "Direct[T]":
+        return super().__new__(cls)
+
+    def __init__(self, value: T | None = None) -> None: ...
+
+reveal_type(Direct(int()))  # revealed: Direct[int]
+reveal_type(Direct())  # revealed: Direct[str]
+```
+
+An explicitly annotated `self` can infer the class's type argument through a method type variable:
+
+```py
+V = TypeVar("V")
+
+class ExplicitSelf(Base, Generic[T]):
+    def __init__(self: "ExplicitSelf[V]", value: V) -> None: ...
+
+reveal_type(ExplicitSelf(int()))  # revealed: ExplicitSelf[int]
+```
+
+Each method can solve different type variables. A default that references another type variable uses
+that variable's inferred type:
+
+```py
+U = TypeVar("U", default=T)
+
+class Pair(Generic[T, U]):
+    def __new__(cls, first: T, second: object = None) -> Self:
+        return super().__new__(cls)
+
+    def __init__(self, first: object, second: U | None = None) -> None: ...
+
+reveal_type(Pair(int(), bytes()))  # revealed: Pair[int, bytes]
+reveal_type(Pair(int()))  # revealed: Pair[int, int]
+```
+
+When both methods infer a type, we combine their results even if one happens to equal the default:
+
+```py
+class Both(Generic[T]):
+    def __new__(cls, first: T, second: object) -> Self:
+        return super().__new__(cls)
+
+    def __init__(self, first: object, second: T) -> None: ...
+
+reveal_type(Both(str(), int()))  # revealed: Both[str | int]
+
+def inferred_unknown(unknown: Unknown):
+    reveal_type(Both(unknown, int()))  # revealed: Both[Unknown | int]
+    reveal_type(Both(int(), unknown))  # revealed: Both[int | Unknown]
 ```
 
 ### Both present, `__new__` inherited from a generic base class
@@ -3608,6 +3702,145 @@ def copy(value: Nested) -> Nested:
 
 def invalid() -> Nested:
     return Box("wrong")  # error: [invalid-return-type]
+```
+
+## Writable `__class__` protocol specializations
+
+Specializing a writable `__class__` property to `object` still requires the exact class.
+
+```py
+from typing import Protocol, TypeVar
+
+T = TypeVar("T")
+
+class Just(Protocol[T]):
+    @property
+    def __class__(self) -> type[T]: ...
+    @__class__.setter
+    def __class__(self, value: type[T]) -> None: ...
+
+class Custom: ...
+
+exact: Just[object] = object()  # no diagnostic
+subclass: Just[object] = Custom()  # error: [invalid-assignment]
+exact_class: type[Just[object]] = object  # no diagnostic
+subclass_class: type[Just[object]] = Custom  # error: [invalid-assignment]
+```
+
+## Recursive protocol receiver restrictions
+
+An implementation can use the same receiver restriction as a generic protocol. Its other parameters
+and return types must still match.
+
+```py
+from __future__ import annotations
+from collections.abc import Callable, Iterable
+from typing import Generic, Protocol, TypeVar
+
+T = TypeVar("T")
+S = TypeVar("S")
+
+class Chain(Protocol[T]):
+    def value(self) -> T:
+        raise RuntimeError
+    def step(self: Chain[tuple[S]], callback: Callable[[S], T]) -> None:
+        raise RuntimeError
+
+class Inherited(Chain[T]):
+    def __init__(self, values: Iterable[T]) -> None: ...
+
+class Structural(Generic[T]):
+    def value(self) -> T:
+        raise NotImplementedError
+    def step(self: Chain[tuple[S]], callback: Callable[[S], T]) -> None:
+        raise NotImplementedError
+
+class Invalid(Generic[T]):
+    def value(self) -> T:
+        raise NotImplementedError
+    def step(self: Chain[tuple[S]], callback: Callable[[S], str]) -> None:
+        raise NotImplementedError
+
+def accepts(value: Chain[int]) -> None: ...
+def check(inherited: Inherited[int], structural: Structural[int], wrong: Structural[str], invalid: Invalid[int]):
+    accepts(inherited)  # no diagnostic
+    accepts(structural)  # no diagnostic
+    accepts(wrong)  # error: [invalid-argument-type]
+    accepts(invalid)  # error: [invalid-argument-type]
+```
+
+A subprotocol must pass the same assignability check.
+
+```py
+class StructuralProtocol(Protocol[T]):
+    def value(self) -> T: ...
+    def step(self: Chain[tuple[S]], callback: Callable[[S], T]) -> None: ...
+
+def check_protocol(valid: StructuralProtocol[int], invalid: StructuralProtocol[str]):
+    accepts(valid)  # no diagnostic
+    accepts(invalid)  # error: [invalid-argument-type]
+```
+
+The expected protocol also supplies the inherited constructor's type argument.
+
+```py
+contextual: Chain[int] = Inherited(())  # no diagnostic
+reveal_type(contextual)  # revealed: Inherited[int]
+```
+
+## Variance of protocol receiver restrictions
+
+An implementation can accept a broader receiver than a protocol requires.
+
+```py
+from __future__ import annotations
+from typing import Protocol, TypeVar
+
+T_co = TypeVar("T_co", covariant=True)
+
+class Reader(Protocol[T_co]):
+    def read(self) -> T_co: ...
+
+class Required(Protocol):
+    def method(self: Reader[bool]) -> None: ...
+
+class Broad:
+    def method(self: Reader[int]) -> None: ...
+
+class Incompatible:
+    def method(self: Reader[str]) -> None: ...
+
+def accepts(value: Required) -> None: ...
+def check(broad: Broad, incompatible: Incompatible):
+    accepts(broad)  # no diagnostic
+    accepts(incompatible)  # error: [invalid-argument-type]
+```
+
+## Structurally equivalent protocol receiver restrictions
+
+Receiver annotations can match structurally even when their type arguments do not satisfy the
+protocol's declared variance.
+
+```py
+from __future__ import annotations
+from typing import Protocol, TypeVar
+
+T_co = TypeVar("T_co", covariant=True)
+
+class Recursive(Protocol[T_co]):
+    def child(self) -> Recursive[T_co]: ...
+
+class Required(Protocol):
+    def method(self: Recursive[int]) -> None: ...
+
+class Implementation:
+    def child(self) -> Implementation:
+        return self
+    def method(self: Recursive[str]) -> None: ...
+
+def accepts(value: Required) -> None: ...
+def check(value: Implementation):
+    accepts(value)  # no diagnostic
 ```
 
 ## Aliased `Self` in explicit receivers

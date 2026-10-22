@@ -22,7 +22,7 @@ use crate::{
     types::{
         CallableType, ClassBase, ClassLiteral, ClassType, IntersectionType, KnownClass,
         MemberLookupPolicy, Parameter, Parameters, Signature, StaticClassLiteral, Type,
-        TypeContext, TypeQualifiers,
+        TypeContext, TypeQualifiers, UnionType,
         call::CallArguments,
         class::{CodeGeneratorKind, FieldKind, MethodDecorator},
         constraints::ConstraintSetBuilder,
@@ -244,6 +244,7 @@ fn check_inherited_method_conflicts<'db>(
             let name = &member.member.name;
             if is_mangled_private(name.as_str())
                 || is_constructor_like_method(name.as_str())
+                || name == "__hash__"
                 || !seen_names.insert(name.clone())
             {
                 continue;
@@ -497,6 +498,43 @@ fn check_class_declaration<'db>(
         return;
     };
     let class_kind = CodeGeneratorKind::from_class(db, literal.into());
+
+    // Hashability may change in either direction across subclasses. Only the hash protocol's
+    // signature constrains each definition; finality and override decorators are checked below.
+    if member.name == "__hash__"
+        && configuration.check_method_liskov_violations()
+        && let Some(object_hash) = Type::object()
+            .member(db, env, "__hash__")
+            .place
+            .ignore_possibly_undefined()
+        && let Some(object_hash) = object_hash.try_upcast_to_callable(db, env)
+    {
+        let expected = UnionType::from_elements(
+            db,
+            env,
+            [
+                object_hash
+                    .map(|callable| callable.into_regular(db))
+                    .to_type(db, env),
+                Type::none(db, env),
+            ],
+        );
+        if !type_on_subclass_instance.is_assignable_to(db, env, expected)
+            && let Some(builder) = context.report_lint(
+                &INVALID_METHOD_OVERRIDE,
+                first_reachable_definition.focus_range(db, context.module()),
+            )
+        {
+            let mut diagnostic = builder.into_diagnostic("Invalid `__hash__` definition");
+            diagnostic.set_primary_annotation_message(format_args!(
+                "Expected `{}`",
+                expected.display(db, env),
+            ));
+            type_on_subclass_instance
+                .assignability_error_context(db, env, expected)
+                .attach_to(db, env, &mut diagnostic);
+        }
+    }
 
     // Check for prohibited `NamedTuple` attribute overrides.
     //
@@ -852,7 +890,7 @@ fn check_class_declaration<'db>(
                 continue;
             }
 
-            if !configuration.check_liskov_violations() {
+            if !configuration.check_liskov_violations() || member.name == "__hash__" {
                 continue;
             }
 
@@ -1086,7 +1124,8 @@ fn check_class_declaration<'db>(
 }
 
 /// Look up `__new__` on the class so generated and decorated callables retain `cls`
-/// until they are bound for the override comparison.
+/// until they are bound for the override comparison. Hashing ignores instance storage
+/// and binds descriptors on the class, as for implicit calls to `__hash__`.
 fn lookup_override_member<'db>(
     db: &'db dyn Db,
     env: &ProgramEnvironment<'db>,
@@ -1095,6 +1134,13 @@ fn lookup_override_member<'db>(
 ) -> PlaceAndQualifiers<'db> {
     if name == "__new__" {
         class.class_member(db, env, name, MemberLookupPolicy::default())
+    } else if name == "__hash__" {
+        Type::instance(db, env, class).member_lookup_with_policy(
+            db,
+            env,
+            name,
+            MemberLookupPolicy::NO_INSTANCE_FALLBACK,
+        )
     } else {
         Type::instance(db, env, class).member(db, env, name)
     }
@@ -1789,44 +1835,46 @@ fn check_missing_overrides<'db>(
 ) {
     let db = context.db();
 
-    let Some(definition) = missing_override_definition(context, member, subclass_scope) else {
-        return;
-    };
-
-    let Some(builder) = context.report_lint(&MISSING_OVERRIDE_DECORATOR, definition.focus_range)
-    else {
-        return;
-    };
-
     let MissingOverrideTarget {
         superclass,
         definition: superclass_definition,
     } = target;
     let superclass_name = superclass.name(db);
     let superclass_member = format!("{superclass_name}.{}", member.name);
-    let mut diagnostic = builder.into_diagnostic(format_args!(
-        "Method `{}` overrides `{superclass_member}` but is not decorated with `@override`",
-        member.name
-    ));
     let override_module =
         if context.program_environment().python_version(db) >= PythonVersion::PY312 {
             "typing"
         } else {
             "typing_extensions"
         };
-    diagnostic.info(format_args!(
-        "Decorate the method with `@{override_module}.override` to make the override explicit"
-    ));
-
-    if let Some(superclass_definition) = superclass_definition
-        && superclass_definition.file(db) == context.file()
+    for definition in extract_local_override_definitions(context, member, subclass_scope)
+        .into_iter()
+        .filter(|definition| !definition.focus_definition_has_override_decorator)
     {
-        diagnostic.annotate(
-            Annotation::secondary(
-                context.span(superclass_definition.focus_range(db, context.module())),
-            )
-            .message(format_args!("`{superclass_member}` defined here")),
-        );
+        let Some(builder) =
+            context.report_lint(&MISSING_OVERRIDE_DECORATOR, definition.focus_range)
+        else {
+            continue;
+        };
+
+        let mut diagnostic = builder.into_diagnostic(format_args!(
+            "Method `{}` overrides `{superclass_member}` but is not decorated with `@override`",
+            member.name
+        ));
+        diagnostic.info(format_args!(
+            "Decorate the method with `@{override_module}.override` to make the override explicit"
+        ));
+
+        if let Some(superclass_definition) = superclass_definition
+            && superclass_definition.file(db) == context.file()
+        {
+            diagnostic.annotate(
+                Annotation::secondary(
+                    context.span(superclass_definition.focus_range(db, context.module())),
+                )
+                .message(format_args!("`{superclass_member}` defined here")),
+            );
+        }
     }
 }
 
@@ -1838,16 +1886,6 @@ fn invalid_explicit_override_definition<'db>(
     extract_local_override_definitions(context, member, subclass_scope)
         .into_iter()
         .find(|definition| definition.any_definition_has_override_decorator)
-}
-
-fn missing_override_definition<'db>(
-    context: &InferContext<'db, '_>,
-    member: &Member<'db>,
-    subclass_scope: ScopeId<'db>,
-) -> Option<LocalOverrideDefinition> {
-    extract_local_override_definitions(context, member, subclass_scope)
-        .into_iter()
-        .find(|definition| !definition.focus_definition_has_override_decorator)
 }
 
 fn extract_local_override_definitions<'db>(

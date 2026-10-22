@@ -8,6 +8,7 @@ use crate::types::call::bind::CheckTypesMode;
 use crate::types::call::{CallArguments, CallError, MatchedArgument};
 use crate::types::class::{DynamicClassAnchor, DynamicEnumAnchor, DynamicNamedTupleAnchor};
 use crate::types::constraints::ConstraintSetBuilder;
+use crate::types::infer::infer_definition_types;
 use crate::types::signatures::{ParametersKind, Signature};
 use crate::types::{
     CallDunderError, ClassBase, ClassLiteral, KnownClass, KnownFunction, KnownUnion,
@@ -37,6 +38,26 @@ pub use unused_binding_support::{UnusedBinding, unused_bindings};
 
 static CLASS_MATCHER: LazyLock<NameMatcher<'static>> =
     LazyLock::new(|| NameMatcher::keyword("class"));
+
+/// Returns the inferred return type of an unannotated function.
+pub fn inlay_hint_return_type<'db>(
+    model: &SemanticModel<'db>,
+    function: &ast::StmtFunctionDef,
+) -> Option<Type<'db>> {
+    // TODO: Remove the async check once return-type inference supports async functions,
+    // using the awaited return type for the hint instead of the coroutine type.
+    if function.returns.is_some() || function.is_async {
+        return None;
+    }
+    let db = model.db();
+    let definition = function.definition(model);
+    let function_type = infer_definition_types(db, definition).function_type(definition)?;
+    let signature = function_type.signature_with_inferred_return_type(db);
+    let [overload] = signature.overloads.as_slice() else {
+        return None;
+    };
+    (!overload.return_ty.is_unknown()).then_some(overload.return_ty)
+}
 
 /// Get the primary definition kind for a name expression within a specific file.
 /// Returns the first definition kind that is reachable for this name in its scope.
@@ -224,27 +245,30 @@ impl<'a> ImplementationsFinder<'a> {
     }
 
     /// Returns implementations contributed by classes defined in `file`.
+    ///
+    /// Returns `None` without loading an AST if the source text rules out implementations.
+    /// Otherwise, returns the definitions, which may be empty.
     pub fn implementations_for_file<'scan>(
         &'scan self,
         db: &'scan dyn Db,
         file: ProgramFile<'scan>,
-    ) -> Vec<ResolvedDefinition<'scan>> {
+    ) -> Option<Vec<ResolvedDefinition<'scan>>> {
         let source = source_text(db, file.file(db));
 
         // Member implementations must mention the member name.
         if let ImplementationsFinderKind::MemberFamily { name_matcher, .. } = &self.kind
             && !name_matcher.may_match(&source)
         {
-            return Vec::new();
+            return None;
         }
 
         // Both class and member searches look for implementations in class definitions.
         if !CLASS_MATCHER.may_match(&source) {
-            return Vec::new();
+            return None;
         }
 
         let roots = &self.roots;
-        match &self.kind {
+        Some(match &self.kind {
             ImplementationsFinderKind::ClassFamily => {
                 class_implementations_for_file(db, file, roots)
             }
@@ -253,7 +277,7 @@ impl<'a> ImplementationsFinder<'a> {
                 accessor_role,
                 ..
             } => member_implementations_for_file(db, file, roots, name, *accessor_role),
-        }
+        })
     }
 
     /// Returns the definitions selected directly for the finder's roots.
@@ -1899,9 +1923,6 @@ pub fn type_hierarchy_subtypes<'db>(
         return vec![];
     };
     direct_subtypes(db, env, target_class, modules)
-        .into_iter()
-        .map(|class_literal| class_literal_to_hierarchy_info(db, class_literal))
-        .collect()
 }
 
 /// Finds classes that directly inherit from `target_class`.
@@ -1918,7 +1939,7 @@ fn direct_subtypes<'db>(
     env: &ProgramEnvironment<'db>,
     target_class: ClassLiteral<'db>,
     modules: &[Module<'db>],
-) -> Vec<ClassLiteral<'db>> {
+) -> Vec<TypeHierarchyClass<'db>> {
     let target_name = target_class.name(db);
     let target_is_object = target_class.is_known(db, KnownClass::Object);
     let target_matcher = NameMatcher::new(target_name.as_str());
@@ -1956,6 +1977,11 @@ fn direct_subtypes<'db>(
 
         let program_file = ProgramFile::new(db, file, env.program(db));
         let file_env = ProgramEnvironment::from_file(program_file);
+
+        // Subtype searches can scan many modules, so release closed files' ASTs as we go. Keep the
+        // guard through class search and range collection, which can also load this file's AST.
+        let _ast_guard =
+            parsed_module(db, program_file.python_file(db)).load_then_clear_on_drop(db);
         for class_ty in reachable_class_literals_in_file(db, program_file) {
             let bases = class_ty.explicit_bases(db);
             let is_subtype = if target_is_object
@@ -1970,7 +1996,7 @@ fn direct_subtypes<'db>(
                 })
             };
             if is_subtype {
-                subtypes.push(class_ty);
+                subtypes.push(class_literal_to_hierarchy_info(db, class_ty));
             }
         }
     }
