@@ -922,15 +922,26 @@ break-on-leading-comment = true
 break-on-trailing-comment = false
 
 [tool.tuff.format.collections]
-lists = { layout = "fill" }
+lists = { layout = "prefer-compact", ignore-magic-trailing-comma = true, compact-nested = true }
 dicts = { layout = "force-expanded" }
 tuples = { layout = "ruff-default" }
 sets = { layout = "ruff-default" }
 
+[tool.tuff.format.arguments]
+calls = "enabled"
+parameters = "enabled"
+mixed = "enabled"
+ignore-magic-trailing-comma = true
+
+[tool.tuff.format.imports]
+mode = "enabled"
+ignore-magic-trailing-comma = true
+
 [tool.tuff.format.one-line-suites]
 mode = "enabled"
-clauses = ["if"]
-statements = ["return", "call"]
+clauses = ["if", "function", "class"]
+statements = ["return", "call", "pass", "ellipsis"]
+docstrings = "disabled"
 
 [tool.tuff.format.docstrings]
 args-sections = "enabled"
@@ -938,14 +949,16 @@ args-sections = "enabled"
 
 Precedence:
 
-1. Ruff CLI flags and `--config KEY=VALUE` overrides for standard Ruff settings.
-2. Ruff configuration from `[tool.ruff]`, `[tool.ruff.format]`, `ruff.toml`, or `.ruff.toml`.
-3. Tuff extension options from discovered `[tool.tuff.format]`, `tuff.toml`, or `.tuff.toml`.
+1. CLI flags and `--config KEY=VALUE` overrides for standard settings.
+2. Tuff values in the resolved configuration, including shared options such as `line-length`.
+3. Ruff values in that configuration, including `[tool.ruff.format]`.
 4. Built-in defaults.
 
-Unknown tuff fields are errors.
+Dedicated `tuff.toml` and `.tuff.toml` files take precedence during discovery. `extend`, explicit `--config`, and `--isolated` also govern custom options. Unknown Tuff fields are errors.
 
 See `docs/custom-formatting-options.md` for examples and option details.
+
+Native lint rules and shared blank-line policies are configured under `[tool.tuff.lint]` and `[tool.tuff.format.blank-lines]`. See [native linting](native-linting.md).
 
 Directory formatting uses Ruff's `include` and `exclude` settings during traversal.
 

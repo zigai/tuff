@@ -3159,6 +3159,7 @@ dependencies = [
  "tikv-jemallocator",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
+ "tuff_lint",
  "tuff_python_formatter",
  "walkdir",
  "wild",
@@ -3434,6 +3435,9 @@ dependencies = [
  "test-case",
  "thiserror 2.0.20",
  "toml 1.1.6+spec-1.1.0",
+ "tuff_lint",
+ "tuff_lint_macros",
+ "tuff_python_formatter",
  "typed-arena",
  "unicode-normalization",
  "unicode-width",
@@ -3888,6 +3892,8 @@ dependencies = [
  "strum",
  "tempfile",
  "toml 1.1.6+spec-1.1.0",
+ "tuff_lint",
+ "tuff_python_formatter",
  "unicode-normalization",
 ]
 

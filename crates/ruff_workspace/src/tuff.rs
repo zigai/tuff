@@ -1,84 +1,32 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
+use serde::Deserialize;
+use toml::Value;
 use toml::map::Map;
-use toml::{Table, Value};
 use tuff_python_formatter::{
     AlignmentMode, AssignmentAlignmentScope, ClassFieldAlignmentScope, CollectionLayout,
     DictAlignmentMode, FeatureMode, FunctionParamAlignmentScope, OneLineSuiteClause,
     OneLineSuiteStatement, TuffCustomOptions,
 };
 
-pub(crate) fn custom_options(path: Option<&Path>) -> Result<TuffCustomOptions> {
-    let Some(config_path) = discover_config(path) else {
-        return Ok(TuffCustomOptions::default());
-    };
-
-    let contents = fs::read_to_string(&config_path)
-        .with_context(|| format!("failed to read {}", config_path.display()))?;
-    let value = contents
-        .parse::<Table>()
-        .with_context(|| format!("failed to parse {}", config_path.display()))?;
-
+pub(crate) fn custom_options(
+    options: &tuff_lint::config::Options,
+    enabled: impl Fn(&str) -> bool,
+) -> Result<TuffCustomOptions> {
     let mut custom = TuffCustomOptions::default();
-    if let Some(table) = tuff_table(&value, &config_path) {
-        apply_root_table(table, &config_path, &mut custom)?;
+    let path = options
+        .lint
+        .source
+        .as_deref()
+        .unwrap_or_else(|| Path::new("config"));
+    if let Some(table) = &options.format {
+        apply_format_table(table, path, &mut custom)?;
     }
-
+    custom.blank_lines = options
+        .lint
+        .spacing_policy(&custom.blank_lines.rules, enabled)?;
     Ok(custom)
-}
-
-fn discover_config(path: Option<&Path>) -> Option<PathBuf> {
-    let start = path.unwrap_or_else(|| Path::new("."));
-    let start = if start.is_dir() {
-        start
-    } else {
-        start.parent().unwrap_or_else(|| Path::new("."))
-    };
-
-    for directory in start.ancestors() {
-        for candidate in ["tuff.toml", ".tuff.toml"] {
-            let config = directory.join(candidate);
-            if config.exists() {
-                return Some(config);
-            }
-        }
-        let pyproject = directory.join("pyproject.toml");
-        if fs::read_to_string(&pyproject).is_ok_and(|contents| contents.contains("[tool.tuff")) {
-            return Some(pyproject);
-        }
-    }
-
-    None
-}
-
-fn tuff_table<'a>(table: &'a Table, path: &Path) -> Option<&'a Map<String, Value>> {
-    match path.file_name().and_then(|name| name.to_str()) {
-        Some("tuff.toml" | ".tuff.toml") => Some(table),
-        Some("pyproject.toml") => table
-            .get("tool")
-            .and_then(Value::as_table)
-            .and_then(|tool| tool.get("tuff"))
-            .and_then(Value::as_table),
-        _ => None,
-    }
-}
-
-fn apply_root_table(
-    table: &Map<String, Value>,
-    path: &Path,
-    custom: &mut TuffCustomOptions,
-) -> Result<()> {
-    for (key, value) in table {
-        match key.as_str() {
-            "line-length" | "target-version" | "include" | "exclude" => {}
-            "format" => apply_format_table(as_table(value, key, path)?, path, custom)?,
-            unknown => bail!("unknown field `{unknown}` in [tool.tuff]"),
-        }
-    }
-
-    Ok(())
 }
 
 fn apply_format_table(
@@ -95,6 +43,16 @@ fn apply_format_table(
             }
             "docstrings" => apply_docstrings_table(as_table(value, key, path)?, custom)?,
             "collections" => apply_collections_table(as_table(value, key, path)?, custom)?,
+            "arguments" => apply_arguments_table(as_table(value, key, path)?, custom)?,
+            "imports" => apply_imports_table(as_table(value, key, path)?, custom)?,
+            "blank-lines" => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct BlankLines {
+                    rules: Vec<tuff_lint::builtin::spacing::SpacingRule>,
+                }
+                custom.blank_lines.rules = value.clone().try_into::<BlankLines>()?.rules;
+            }
             unknown => bail!("unknown field `{unknown}` in [tool.tuff.format]"),
         }
     }
@@ -162,6 +120,7 @@ fn apply_one_line_suites_table(
     for (key, value) in table {
         match key.as_str() {
             "mode" => custom.one_line_suites.mode = feature_mode(value, key)?,
+            "docstrings" => custom.one_line_suites.docstrings = feature_mode(value, key)?,
             "clauses" => {
                 custom.one_line_suites.clauses = string_array(value, key, path)?
                     .into_iter()
@@ -195,6 +154,36 @@ fn apply_docstrings_table(
     Ok(())
 }
 
+fn apply_arguments_table(table: &Map<String, Value>, custom: &mut TuffCustomOptions) -> Result<()> {
+    for (key, value) in table {
+        match key.as_str() {
+            "calls" => custom.arguments.calls = feature_mode(value, key)?,
+            "parameters" => custom.arguments.parameters = feature_mode(value, key)?,
+            "mixed" => custom.arguments.mixed = feature_mode(value, key)?,
+            "ignore-magic-trailing-comma" => {
+                custom.arguments.ignore_magic_trailing_comma = bool_value(value, key)?;
+            }
+            unknown => bail!("unknown field `{unknown}` in [tool.tuff.format.arguments]"),
+        }
+    }
+
+    Ok(())
+}
+
+fn apply_imports_table(table: &Map<String, Value>, custom: &mut TuffCustomOptions) -> Result<()> {
+    for (key, value) in table {
+        match key.as_str() {
+            "mode" => custom.imports.mode = feature_mode(value, key)?,
+            "ignore-magic-trailing-comma" => {
+                custom.imports.ignore_magic_trailing_comma = bool_value(value, key)?;
+            }
+            unknown => bail!("unknown field `{unknown}` in [tool.tuff.format.imports]"),
+        }
+    }
+
+    Ok(())
+}
+
 fn apply_collections_table(
     table: &Map<String, Value>,
     custom: &mut TuffCustomOptions,
@@ -216,6 +205,10 @@ fn apply_collections_table(
                         collection_layout(string(value, policy_key, Path::new("config"))?)?;
                 }
                 "threshold" => threshold = Some(value_as_u16(value, policy_key)?),
+                "ignore-magic-trailing-comma" => {
+                    policy.ignore_magic_trailing_comma = bool_value(value, policy_key)?;
+                }
+                "compact-nested" => policy.compact_nested = bool_value(value, policy_key)?,
                 unknown => {
                     bail!("unknown field `{unknown}` in [tool.tuff.format.collections.{key}]")
                 }
@@ -360,6 +353,8 @@ fn one_line_suite_clause(value: &str) -> Result<OneLineSuiteClause> {
         "except" => Ok(OneLineSuiteClause::Except),
         "finally" => Ok(OneLineSuiteClause::Finally),
         "match-case" => Ok(OneLineSuiteClause::MatchCase),
+        "function" => Ok(OneLineSuiteClause::Function),
+        "class" => Ok(OneLineSuiteClause::Class),
         value => bail!("unsupported one-line suite clause `{value}`"),
     }
 }

@@ -4,6 +4,7 @@ pub mod pyproject;
 pub mod resolver;
 
 mod settings;
+mod tuff;
 
 pub use settings::{FileResolverSettings, FormatterSettings, Settings};
 

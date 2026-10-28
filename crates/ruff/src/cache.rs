@@ -538,6 +538,8 @@ mod tests {
     use ruff_linter::settings::types::UnsafeFixes;
     use ruff_python_ast::PySourceType;
     use ruff_workspace::Settings;
+    use ruff_workspace::configuration::Configuration;
+    use ruff_workspace::options::Options;
 
     use crate::cache::{self, ChangeData, FileCache, FileCacheData, FileCacheKey};
     use crate::cache::{Cache, RelativePathBuf};
@@ -978,7 +980,7 @@ mod tests {
     fn tuff_config_changes_invalidate_format_cache() {
         let source: &[u8] = b"class User:\n    id: int\n    display_name: str\n";
 
-        let test_cache = TestCache::new("tuff_config_changes_invalidate_format_cache");
+        let mut test_cache = TestCache::new("tuff_config_changes_invalidate_format_cache");
         let cache = test_cache.open();
         let source_path = test_cache.write_source_file("source.py", source);
 
@@ -996,6 +998,7 @@ class-fields = "enabled"
 "#,
         )
         .unwrap();
+        test_cache.reload_settings().unwrap();
 
         let cache = test_cache.open();
         let result = test_cache
@@ -1013,7 +1016,7 @@ class-fields = "enabled"
     fn cached_format_still_reports_tuff_config_errors() {
         let source: &[u8] = b"class User:\n    id: int\n";
 
-        let test_cache = TestCache::new("cached_format_still_reports_tuff_config_errors");
+        let mut test_cache = TestCache::new("cached_format_still_reports_tuff_config_errors");
         let cache = test_cache.open();
         test_cache.write_source_file("source.py", source);
 
@@ -1032,10 +1035,8 @@ unknown = true
         )
         .unwrap();
 
-        let cache = test_cache.open();
-        let result = test_cache.format_file_with_cache("source.py", &cache);
-
-        assert!(matches!(result, Err(FormatCommandError::TuffConfig(_, _))));
+        let error = test_cache.reload_settings().unwrap_err();
+        assert!(error.to_string().contains("unknown"), "{error:#}");
     }
 
     #[test]
@@ -1132,6 +1133,18 @@ unknown = true
             file.write_all(contents).unwrap();
             file.sync_data().unwrap();
             path
+        }
+
+        fn reload_settings(&mut self) -> Result<()> {
+            let configuration = Configuration::from_options(
+                Options::default(),
+                Some(&self.package_root.join("pyproject.toml")),
+                &self.package_root,
+            )?;
+            let mut settings = configuration.into_settings(&self.package_root)?;
+            settings.cache_dir = self.settings.cache_dir.clone();
+            self.settings = settings;
+            Ok(())
         }
 
         fn open(&self) -> Cache {

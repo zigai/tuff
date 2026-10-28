@@ -329,6 +329,19 @@ pub fn check_path(
         }
     }
 
+    crate::tuff::replace_spacing_overlaps(&mut context, locator.contents());
+    let tuff_suppressions = crate::tuff::suppressions(
+        parsed.syntax(),
+        locator.contents(),
+        comment_ranges,
+        &context,
+    );
+    if noqa.is_enabled()
+        && let Some(suppressions) = &tuff_suppressions
+    {
+        crate::tuff::apply_suppressions(&mut context, suppressions);
+    }
+
     // Enforce `noqa` directives.
     if noqa.is_enabled()
         || context
@@ -352,6 +365,11 @@ pub fn check_path(
         }
     }
 
+    if noqa.is_enabled()
+        && let Some(suppressions) = &tuff_suppressions
+    {
+        crate::tuff::apply_suppressions(&mut context, suppressions);
+    }
     let (mut diagnostics, source_file) = context.into_parts();
 
     if !parsed.has_valid_syntax() {

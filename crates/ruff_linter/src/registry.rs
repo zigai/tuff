@@ -211,6 +211,9 @@ pub enum Linter {
     /// [tryceratops](https://pypi.org/project/tryceratops/)
     #[prefix = "TRY"]
     Tryceratops,
+    /// [Tuff](https://github.com/zigai/tuff)
+    #[prefix = "TUF"]
+    Tuff,
 }
 
 pub trait RuleNamespace: Sized {
@@ -353,6 +356,15 @@ impl Rule {
 
     /// Return the URL for the rule documentation.
     pub fn url(&self) -> String {
+        if self
+            .noqa_code()
+            .is_some_and(|code| code.to_string().starts_with("TUF"))
+        {
+            return format!(
+                "https://github.com/zigai/tuff/blob/main/docs/rules/{}.md",
+                self.name()
+            );
+        }
         // Every rule has documentation. Calling `explanation()` here would retain all
         // documentation strings in binaries that only need the URLs.
         format!(
@@ -503,7 +515,9 @@ mod tests {
             })
             .collect();
 
-        for rule in Rule::iter() {
+        // Native policies retain their public configuration names from Rattle.
+        for rule in Rule::iter().filter(|rule| !Linter::Tuff.rules().any(|native| native == *rule))
+        {
             let rule_name = rule.name();
             for pattern in &patterns {
                 assert!(

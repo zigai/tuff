@@ -1,11 +1,12 @@
 # Tuff Architecture
 
-Tuff is a Ruff fork with additional, opt-in formatter behavior.
+Tuff is a Ruff fork with additional, opt-in lint and formatter behavior.
 
 - `crates/ruff` builds the `tuff` binary.
 - `crates/tuff_python_formatter` contains Tuff-specific formatter behavior.
+- `crates/tuff_lint` owns native Rust rules, shared facts, named suppression, and spacing decisions. `crates/tuff_lint_macros` generates Ruff registrations from rule metadata.
 - `crates/ruff_python_formatter` remains the upstream-compatible formatter reference.
-- Ruff parser, AST, trivia, source, diagnostics, cache storage, workspace resolution, and generic formatter crates stay aligned with upstream.
+- Ruff parser, AST, trivia, source, diagnostics, cache storage, and generic formatter crates stay aligned with upstream. Workspace resolution also loads Tuff configuration.
 - Tuff defaults stay Ruff-compatible.
 - Custom behavior is enabled through `TuffCustomOptions` or `[tool.tuff]`.
 
@@ -14,11 +15,14 @@ Tuff is a Ruff fork with additional, opt-in formatter behavior.
 Tuff-owned code lives in:
 
 - `crates/tuff_python_formatter`
+- `crates/tuff_lint` and `crates/tuff_lint_macros`
+- `crates/ruff_linter/src/tuff.rs` and `rules/tuff.rs`
+- `crates/ruff_workspace/src/tuff.rs`
 - `crates/ruff/src/tuff`
 - `crates/ruff/tests/tuff_cli.rs`
 - Tuff docs and config references
 
-`crates/ruff/src/commands` contains CLI orchestration. Tuff-specific config loading, option adaptation, and formatter entrypoints live under `crates/ruff/src/tuff`.
+`crates/ruff/src/commands` contains CLI orchestration. Workspace settings resolve custom options alongside standard options. Formatter entrypoints live under `crates/ruff/src/tuff`.
 
 The cache layer is product-neutral. Tuff formatting options participate through generic format cache keys.
 
@@ -32,6 +36,8 @@ The cache layer is product-neutral. Tuff formatting options participate through 
 6. Format nodes through copied Ruff formatter rules.
 7. Let copied node files call `custom::hooks` at narrow insertion points.
 8. Keep policy and derived decisions under `crates/tuff_python_formatter/src/custom`.
+
+Enabled blank-line policies measure the rendered layout before the shared spacing planner runs. Formatter hooks apply its constraints through formatting IR. Optional lint diagnostics use the same planner and rendered metrics. Attribute, method, and export reordering remains lint-only. See [native linting](native-linting.md) for configuration and rule authoring.
 
 ## Upstream Vendoring
 

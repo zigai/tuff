@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::env::VarError;
 use std::num::{NonZeroU8, NonZeroU16};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use glob::{GlobError, Paths, PatternError, glob};
@@ -21,6 +22,7 @@ use shellexpand::LookupError;
 use strum::IntoEnumIterator;
 
 use ruff_cache::cache_dir;
+use ruff_db::system::SystemPathBuf;
 use ruff_formatter::IndentStyle;
 use ruff_graph::{AnalyzeSettings, Direction, StringImports};
 use ruff_linter::line_width::{IndentWidth, LineLength};
@@ -45,6 +47,7 @@ use ruff_python_ast as ast;
 use ruff_python_formatter::{
     DocstringCode, DocstringCodeLineWidth, MagicTrailingComma, QuoteStyle,
 };
+use ruff_ranged_value::ValueSource;
 
 use crate::options::{
     AnalyzeOptions, Flake8AnnotationsOptions, Flake8BanditOptions, Flake8BooleanTrapOptions,
@@ -206,6 +209,7 @@ pub struct Configuration {
     pub indent_width: Option<IndentWidth>,
 
     pub lint: LintConfiguration,
+    pub tuff: tuff_lint::config::Options,
     pub format: FormatConfiguration,
     pub analyze: AnalyzeConfiguration,
 }
@@ -234,7 +238,8 @@ impl Configuration {
         )
         .context("failed to resolve `per-file-target-version` table")?;
 
-        let formatter = FormatterSettings {
+        let mut formatter = FormatterSettings {
+            custom: tuff_python_formatter::TuffCustomOptions::default(),
             exclude: FilePatternSet::try_from_iter(format.exclude.unwrap_or_default())?,
             extension: self.extension.clone().unwrap_or_default(),
             preview: format_preview,
@@ -298,6 +303,9 @@ impl Configuration {
         let line_length = self.line_length.unwrap_or_default();
 
         let rules = lint.as_rule_table(lint_preview)?;
+        formatter.custom = crate::tuff::custom_options(&self.tuff, |code| {
+            Rule::from_code(code).is_ok_and(|rule| rules.enabled(rule))
+        })?;
 
         // LinterSettings validation
         let isort = lint
@@ -357,6 +365,8 @@ impl Configuration {
 
             linter: LinterSettings {
                 rules,
+                tuff: tuff_lint::Settings::new(project_root.to_path_buf(), self.tuff.lint.rules)?,
+                tuff_format: formatter.to_tuff_format_options(ast::PySourceType::Python, "", None),
                 exclude: FilePatternSet::try_from_iter(lint.exclude.unwrap_or_default())?,
                 extension: self.extension.unwrap_or_default(),
                 preview: lint_preview,
@@ -532,7 +542,8 @@ impl Configuration {
     ) -> Result<Self> {
         warn_about_deprecated_top_level_lint_options(&options.lint_top_level.0, path);
 
-        let lint = if let Some(mut lint) = options.lint {
+        let tuff = tuff_lint::config::from_path(path)?;
+        let mut lint = if let Some(mut lint) = options.lint {
             lint.common = lint.common.combine(options.lint_top_level.0);
             lint
         } else {
@@ -542,7 +553,27 @@ impl Configuration {
             }
         };
 
+        let source = tuff.lint.source.as_ref().map_or(ValueSource::Cli, |path| {
+            ValueSource::File(Arc::new(SystemPathBuf::from_path_buf_lossy(path.clone())))
+        });
+        lint.common
+            .extend_select
+            .get_or_insert_with(Vec::new)
+            .extend(
+                tuff.lint
+                    .selected_codes()?
+                    .into_iter()
+                    .map(|code| UnresolvedRuleSelector::new(code, source.clone())),
+            );
+        lint.common.ignore.get_or_insert_with(Vec::new).extend(
+            tuff.lint
+                .ignored_codes()?
+                .into_iter()
+                .map(|code| UnresolvedRuleSelector::new(code, source.clone())),
+        );
+
         Ok(Self {
+            tuff,
             builtins: options.builtins,
             cache_dir: options
                 .cache_dir
@@ -690,6 +721,7 @@ impl Configuration {
             extension: self.extension.or(config.extension),
 
             lint: self.lint.combine(config.lint),
+            tuff: self.tuff.combine(config.tuff),
             format: self.format.combine(config.format),
             analyze: self.analyze.combine(config.analyze),
         }
@@ -976,6 +1008,11 @@ impl LintConfiguration {
                     .filter(|s| s.specificity() == spec)
                 {
                     for rule in selector.rules(&preview) {
+                        if matches!(selector, RuleSelector::All | RuleSelector::Category(_))
+                            && rule.noqa_code().is_some_and(|code| code.prefix() == "TUF")
+                        {
+                            continue;
+                        }
                         select_map_updates.insert(rule, true);
 
                         if spec == Specificity::Rule {
@@ -986,7 +1023,17 @@ impl LintConfiguration {
                 for selector in selection
                     .ignore
                     .iter()
-                    .chain(carriedover_ignores.into_iter().flatten())
+                    .chain(
+                        carriedover_ignores
+                            .into_iter()
+                            .flatten()
+                            .filter(|selector| {
+                                // Native opt-outs belong to their config layer; a child can re-enable them.
+                                !selector.all_rules().all(|rule| {
+                                    rule.noqa_code().is_some_and(|code| code.prefix() == "TUF")
+                                })
+                            }),
+                    )
                     .filter(|s| s.specificity() == spec)
                 {
                     for rule in selector.rules(&preview) {

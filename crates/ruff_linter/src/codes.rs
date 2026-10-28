@@ -234,6 +234,7 @@ impl std::fmt::Display for RuleStatus {
     }
 }
 
+#[tuff_lint_macros::register_codes]
 #[ruff_macros::map_codes]
 pub fn code_to_rule(linter: Linter, code: &str) -> Option<(RuleStatus, Rule)> {
     #[expect(clippy::enum_glob_use)]

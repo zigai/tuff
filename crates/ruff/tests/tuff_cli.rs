@@ -197,6 +197,111 @@ assignments = "preserve-input"
 }
 
 #[test]
+fn reads_compact_format_config() {
+    for (filename, prefix) in [("pyproject.toml", "tool.tuff."), ("tuff.toml", "")] {
+        let tempdir = tempdir().unwrap();
+        fs::write(
+            tempdir.path().join(filename),
+            format!(
+                r#"
+[{prefix}format.collections]
+lists = {{ layout = "prefer-compact", ignore-magic-trailing-comma = true, compact-nested = true }}
+
+[{prefix}format.arguments]
+calls = "enabled"
+parameters = "enabled"
+mixed = "enabled"
+ignore-magic-trailing-comma = true
+
+[{prefix}format.imports]
+mode = "enabled"
+ignore-magic-trailing-comma = true
+
+[{prefix}format.one-line-suites]
+mode = "enabled"
+clauses = ["function", "class"]
+statements = ["pass", "ellipsis", "return"]
+"#
+            ),
+        )
+        .unwrap();
+        let path = tempdir.path().join("example.py");
+        fs::write(
+            &path,
+            "from package import (\n    Alpha,\n    Beta,\n)\n\nvalues = [\n    1,\n    2,\n]\n\nresult = call(\n    first,\n    second,\n)\n\ndef get(\n    first,\n    second,\n):\n    return first\n\nclass Empty:\n    pass\n",
+        )
+        .unwrap();
+
+        let output = tuff().arg("format").arg(&path).output().unwrap();
+        assert!(output.status.success(), "stderr: {}", stderr(&output));
+        let formatted = fs::read_to_string(&path).unwrap();
+        assert!(formatted.contains("from package import Alpha, Beta\n"));
+        assert!(formatted.contains("values = [1, 2]\n"));
+        assert!(formatted.contains("result = call(first, second)\n"));
+        assert!(formatted.contains("def get(first, second): return first\n"));
+        assert!(formatted.contains("class Empty: pass\n"));
+
+        let output = tuff()
+            .arg("format")
+            .arg("--check")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "stderr: {}", stderr(&output));
+    }
+}
+
+#[test]
+fn compact_modes_are_opt_in_and_invalidate_cached_formatting() {
+    let tempdir = tempdir().unwrap();
+    let config = tempdir.path().join("tuff.toml");
+    let path = tempdir.path().join("example.py");
+    let source = "result = call(\n    first,\n    second,\n)\n";
+    fs::write(&path, source).unwrap();
+    for (mode, expected) in [
+        ("disabled", source),
+        ("enabled", "result = call(first, second)\n"),
+    ] {
+        fs::write(
+            &config,
+            format!("[format.arguments]\ncalls = '{mode}'\nignore-magic-trailing-comma = true\n"),
+        )
+        .unwrap();
+        let output = tuff().arg("format").arg(&path).output().unwrap();
+        assert!(output.status.success(), "stderr: {}", stderr(&output));
+        assert_eq!(fs::read_to_string(&path).unwrap(), expected);
+    }
+}
+
+#[test]
+fn compact_config_errors_do_not_write_files() {
+    for (table, setting, expected) in [
+        ("arguments", "calls = true", "expected string"),
+        ("imports", "mode = 'fill'", "unsupported feature mode"),
+        ("arguments", "call = 'enabled'", "unknown field `call`"),
+        (
+            "collections",
+            "lists = { compact-nested = 'enabled' }",
+            "expected boolean",
+        ),
+        ("one-line-suites", "docstrings = true", "expected string"),
+    ] {
+        let tempdir = tempdir().unwrap();
+        fs::write(
+            tempdir.path().join("tuff.toml"),
+            format!("[format.{table}]\n{setting}\n"),
+        )
+        .unwrap();
+        let path = tempdir.path().join("example.py");
+        fs::write(&path, "value=[1,2]\n").unwrap();
+        let output = tuff().arg("format").arg(&path).output().unwrap();
+        assert!(!output.status.success());
+        assert!(stderr(&output).contains(expected), "{}", stderr(&output));
+        assert_eq!(fs::read_to_string(path).unwrap(), "value=[1,2]\n");
+    }
+}
+
+#[test]
 fn reads_one_line_suite_config() {
     let tempdir = tempdir().unwrap();
     fs::write(
@@ -815,4 +920,254 @@ fn directory_formatting_does_not_follow_symlinked_directories() {
 
 fn stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+#[test]
+fn lint_selected_spacing_formats_with_shared_options() {
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.cache/config-tests");
+    fs::create_dir_all(&base).unwrap();
+    let directory = tempfile::tempdir_in(base).unwrap();
+    fs::write(directory.path().join("pyproject.toml"), "[tool.ruff.lint]\nselect = []\n[tool.tuff.lint]\nenable = ['blank-line-before-branch']\n[tool.tuff.lint.rules.blank-line-before-branch]\nmax_suite_non_empty_lines = 1\nallow_related_return_tails = false\n").unwrap();
+    let path = directory.path().join("input.py");
+    fs::write(&path, "def f():\n    value = 1\n    return value\n").unwrap();
+    let output = tuff().arg("format").arg(&path).output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "def f():\n    value = 1\n\n    return value\n"
+    );
+    let output = tuff()
+        .args(["check", "--no-cache", "--output-format", "json"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn formatter_only_spacing_does_not_enable_lint() {
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.cache/config-tests");
+    fs::create_dir_all(&base).unwrap();
+    let directory = tempfile::tempdir_in(base).unwrap();
+    fs::write(directory.path().join("pyproject.toml"), "[tool.ruff.lint]\nselect = []\n[tool.tuff.format.blank-lines]\nrules = ['no-suite-leading-trailing-blank-lines']\n").unwrap();
+    let path = directory.path().join("input.py");
+    fs::write(&path, "def f():\n\n    work()\n").unwrap();
+    let output = tuff()
+        .args(["check", "--no-cache", "--output-format", "json"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!([])
+    );
+    let output = tuff().arg("format").arg(&path).output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(fs::read_to_string(path).unwrap(), "def f():\n    work()\n");
+}
+
+#[test]
+fn explicit_and_isolated_configs_control_custom_formatting() {
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.cache/config-tests");
+    fs::create_dir_all(&base).unwrap();
+    let directory = tempfile::tempdir_in(base).unwrap();
+    fs::write(
+        directory.path().join("tuff.toml"),
+        "[format.blank-lines]\nrules = ['no-suite-leading-trailing-blank-lines']\n",
+    )
+    .unwrap();
+    let explicit = directory.path().join("other.toml");
+    fs::write(&explicit, "[format]\nquote-style = 'single'\n").unwrap();
+    let path = directory.path().join("input.py");
+    for args in [
+        vec!["--isolated"],
+        vec!["--config", explicit.to_str().unwrap()],
+    ] {
+        fs::write(&path, "def f():\n\n    work()\n").unwrap();
+        let output = tuff().arg("format").args(args).arg(&path).output().unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "def f():\n\n    work()\n"
+        );
+    }
+}
+
+#[test]
+fn invalid_native_spacing_config_fails_before_writing() {
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.cache/config-tests");
+    fs::create_dir_all(&base).unwrap();
+    let directory = tempfile::tempdir_in(base).unwrap();
+    let path = directory.path().join("input.py");
+    let source = "def f():\n\n    work( )\n";
+    for (config, message) in [
+        (
+            "[tool.tuff.lint]\nenable = ['missing-rule']\n",
+            "missing-rule",
+        ),
+        (
+            "[tool.tuff.format.blank-lines]\nrules = ['forbidden-call']\n",
+            "forbidden-call",
+        ),
+        (
+            "[tool.tuff.format.blank-lines]\nrules = []\nunknown = true\n",
+            "unknown",
+        ),
+        (
+            "[tool.tuff.lint]\nenable = ['blank-line-before-branch']\n[tool.tuff.lint.rules.blank-line-before-branch]\nmax_suite_non_empty_lines = -1\n",
+            "invalid value",
+        ),
+        ("[tool.tuff.lint]\nenable = ['all']\n", "mutually exclusive"),
+        (
+            "[tool.tuff.format.blank-lines]\nrules = ['blank-line-before-unrelated-block', 'block-header-cuddle-strict']\n",
+            "mutually exclusive",
+        ),
+    ] {
+        fs::write(directory.path().join("pyproject.toml"), config).unwrap();
+        for command in ["check", "format"] {
+            fs::write(&path, source).unwrap();
+            let output = tuff().arg(command).arg(&path).output().unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "{config}: {}",
+                stderr(&output)
+            );
+            assert!(
+                stderr(&output).contains(message),
+                "{config}: {}",
+                stderr(&output)
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), source);
+        }
+    }
+}
+
+#[test]
+fn native_disables_override_formatter_selection_and_conflicts() {
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.cache/config-tests");
+    fs::create_dir_all(&base).unwrap();
+    let directory = tempfile::tempdir_in(base).unwrap();
+    fs::write(directory.path().join("tuff.toml"), "[lint]\ndisable = ['no-suite-leading-trailing-blank-lines', 'blank-line-before-unrelated-block']\n[format.blank-lines]\nrules = ['no-suite-leading-trailing-blank-lines', 'blank-line-before-unrelated-block', 'block-header-cuddle-strict']\n").unwrap();
+    let path = directory.path().join("input.py");
+    fs::write(&path, "def f():\n\n    work()\n").unwrap();
+    let output = tuff().arg("format").arg(&path).output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        fs::read_to_string(path).unwrap(),
+        "def f():\n\n    work()\n"
+    );
+}
+
+#[test]
+fn inherited_custom_tables_share_rule_options() {
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.cache/config-tests");
+    fs::create_dir_all(&base).unwrap();
+    let directory = tempfile::tempdir_in(base).unwrap();
+    fs::write(directory.path().join("pyproject.toml"), "[tool.tuff.lint]\nenable = ['blank-line-before-branch']\n[tool.tuff.lint.rules.blank-line-before-branch]\nmax_suite_non_empty_lines = 1\nallow_related_return_tails = false\n[tool.tuff.format.alignment]\nassignments = 'enabled'\n").unwrap();
+    let child = directory.path().join("child");
+    fs::create_dir(&child).unwrap();
+    fs::write(child.join("tuff.toml"), "extend = '../pyproject.toml'\n[format.blank-lines]\nrules = ['no-suite-leading-trailing-blank-lines']\n[format.alignment]\nmin-group-size = 2\n").unwrap();
+    let path = child.join("input.py");
+    fs::write(
+        &path,
+        "def f():\n\n    a = 1\n    longer = 2\n    return longer\n",
+    )
+    .unwrap();
+    let output = tuff().arg("format").arg(&path).output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        fs::read_to_string(path).unwrap(),
+        "def f():\n    a      = 1\n    longer = 2\n\n    return longer\n"
+    );
+}
+
+#[test]
+fn shared_tuff_pyproject_options_override_ruff_values() {
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.cache/config-tests");
+    fs::create_dir_all(&base).unwrap();
+    let directory = tempfile::tempdir_in(base).unwrap();
+    fs::write(
+        directory.path().join("pyproject.toml"),
+        "[tool.ruff.format]\nquote-style = 'double'\n[tool.tuff.format]\nquote-style = 'single'\n",
+    )
+    .unwrap();
+    let path = directory.path().join("input.py");
+    fs::write(&path, "value = \"text\"\n").unwrap();
+    let output = tuff().arg("format").arg(&path).output().unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(fs::read_to_string(path).unwrap(), "value = 'text'\n");
+}
+
+#[test]
+fn broad_ruff_selectors_keep_native_rules_opt_in() {
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.cache/config-tests");
+    fs::create_dir_all(&base).unwrap();
+    let directory = tempfile::tempdir_in(base).unwrap();
+    let path = directory.path().join("input.py");
+    fs::write(&path, "class _Hidden:\n    pass\n").unwrap();
+    for selector in ["ALL", "restriction"] {
+        let output = tuff()
+            .args([
+                "check",
+                "--isolated",
+                "--preview",
+                "--no-cache",
+                "--select",
+                selector,
+                "--output-format",
+                "json",
+            ])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            matches!(output.status.code(), Some(0 | 1)),
+            "{}",
+            stderr(&output)
+        );
+        let reports: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(reports.as_array().unwrap().iter().all(|report| {
+            !report["code"]
+                .as_str()
+                .is_some_and(|code| code.starts_with("TUF"))
+        }));
+    }
+}
+
+#[test]
+fn inherited_native_reenable_is_shared_by_lint_and_format() {
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.cache/config-tests");
+    fs::create_dir_all(&base).unwrap();
+    let directory = tempfile::tempdir_in(base).unwrap();
+    fs::write(directory.path().join("pyproject.toml"), "[tool.ruff.lint]\nselect = []\n[tool.tuff.lint]\ndisable = ['no-suite-leading-trailing-blank-lines']\n").unwrap();
+    let child = directory.path().join("child");
+    fs::create_dir(&child).unwrap();
+    fs::write(child.join("tuff.toml"), "extend = '../pyproject.toml'\n[lint]\nenable = ['no-suite-leading-trailing-blank-lines']\n").unwrap();
+    let path = child.join("input.py");
+    fs::write(&path, "def run():\n\n    pass\n").unwrap();
+    let lint = tuff()
+        .args(["check", "--no-cache", "--output-format", "json"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(lint.status.code(), Some(1), "{}", stderr(&lint));
+    let formatted = tuff()
+        .args(["format", "--no-cache"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(formatted.status.success(), "{}", stderr(&formatted));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "def run():\n    pass\n");
+    let lint = tuff()
+        .args(["check", "--no-cache", "--output-format", "json"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(lint.status.code(), Some(0), "{}", stderr(&lint));
 }

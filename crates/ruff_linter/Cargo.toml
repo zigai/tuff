@@ -26,6 +26,9 @@ ruff_python_index = { workspace = true }
 ruff_python_literal = { workspace = true }
 ruff_python_parser = { workspace = true }
 ruff_python_semantic = { workspace = true }
+tuff_lint = { workspace = true }
+tuff_lint_macros = { workspace = true }
+tuff_python_formatter = { workspace = true }
 ruff_python_stdlib = { workspace = true }
 ruff_python_trivia = { workspace = true }
 ruff_ranged_value = { workspace = true }

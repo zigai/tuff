@@ -62,7 +62,9 @@ pub(crate) fn check_noqa(
             continue;
         };
 
-        if name == Rule::BlanketNOQA.name() {
+        // Suppression-style policies must not be hidden by the very directive
+        // they diagnose. Named Tuff ignores are still applied by the caller.
+        if name == Rule::BlanketNOQA.name() || name == Rule::UseTuffIgnoreComment.name() {
             continue;
         }
 

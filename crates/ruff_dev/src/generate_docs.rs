@@ -32,7 +32,16 @@ pub(crate) fn main(args: &Args) -> Result<()> {
 
         let _ = writeln!(&mut output, "# {}", rule.name_and_code());
 
+        let native = rule
+            .noqa_code()
+            .is_some_and(|code| code.to_string().starts_with("TUF"));
+        let repository = if native {
+            "zigai/tuff"
+        } else {
+            "astral-sh/ruff"
+        };
         let status_text = match rule.status() {
+            _ if native => "Native Tuff rule".to_string(),
             RuleStatus::Stable { since } => {
                 format!(
                     r#"Added in <a href="https://github.com/astral-sh/ruff/releases/tag/{since}">{since}</a>"#
@@ -69,8 +78,8 @@ pub(crate) fn main(args: &Args) -> Result<()> {
             &mut output,
             r#"<small>
 {status_text} ·
-<a href="https://github.com/astral-sh/ruff/issues?q=sort%3Aupdated-desc%20is%3Aissue%20is%3Aopen%20{issue_search}" target="_blank">Related issues</a> ·
-<a href="https://github.com/astral-sh/ruff/blob/main/{file}#L{line}" target="_blank">View source</a>
+<a href="https://github.com/{repository}/issues?q=sort%3Aupdated-desc%20is%3Aissue%20is%3Aopen%20{issue_search}" target="_blank">Related issues</a> ·
+<a href="https://github.com/{repository}/blob/main/{file}#L{line}" target="_blank">View source</a>
 </small>
 
 "#,

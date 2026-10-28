@@ -16,9 +16,10 @@ use ruff_linter::settings::types::{PythonVersion, RequiredVersion};
 
 use crate::options::{Options, validate_required_version};
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 struct Tools {
     ruff: Option<Options>,
+    tuff: Option<toml::Table>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -27,7 +28,7 @@ struct Project {
     requires_python: Option<VersionSpecifiers>,
 }
 
-#[derive(Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct Pyproject {
     tool: Option<Tools>,
     project: Option<Project>,
@@ -73,16 +74,24 @@ fn parse_pyproject_toml(path: &Path) -> Result<Pyproject> {
     parse_toml(path, &["tool", "ruff"])
 }
 
-/// Return `true` if a `pyproject.toml` contains a `[tool.ruff]` section.
+/// Return `true` if a `pyproject.toml` contains Ruff or Tuff configuration.
 fn ruff_enabled<P: AsRef<Path>>(path: P) -> Result<bool> {
     let pyproject = parse_pyproject_toml(path.as_ref())?;
-    Ok(pyproject.tool.and_then(|tool| tool.ruff).is_some())
+    Ok(pyproject
+        .tool
+        .is_some_and(|tool| tool.ruff.is_some() || tool.tuff.is_some()))
 }
 
 /// Return the path to the `pyproject.toml` or `ruff.toml` file in a given
 /// directory.
 pub fn settings_toml<P: AsRef<Path>>(path: P) -> Result<Option<PathBuf>> {
     let path = path.as_ref();
+    for name in ["tuff.toml", ".tuff.toml"] {
+        let tuff_toml = path.join(name);
+        if tuff_toml.is_file() {
+            return Ok(Some(tuff_toml));
+        }
+    }
     // Check for `.ruff.toml`.
     let ruff_toml = path.join(".ruff.toml");
     if ruff_toml.is_file() {
@@ -178,15 +187,45 @@ pub fn find_user_settings_toml() -> Option<PathBuf> {
     None
 }
 
-/// Load `Options` from a `pyproject.toml` or `ruff.toml` file.
+/// Load shared options from a Ruff, Tuff, or `pyproject.toml` file.
 pub(super) fn load_options<P: AsRef<Path>>(path: P) -> Result<Options> {
     let path = path.as_ref();
-    if path.ends_with("pyproject.toml") {
+    if matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("tuff.toml" | ".tuff.toml")
+    ) {
+        let _guard = ValueSourceGuard::new(
+            ValueSource::File(Arc::new(SystemPathBuf::from_path_buf_lossy(
+                path.to_path_buf(),
+            ))),
+            true,
+        );
+        Ok(toml::Value::Table(tuff_lint::config::standard_options(path)?).try_into()?)
+    } else if path.ends_with("pyproject.toml") {
         let pyproject = parse_pyproject_toml(path)?;
         let mut ruff = pyproject
             .tool
             .and_then(|tool| tool.ruff)
             .unwrap_or_default();
+        let _guard = ValueSourceGuard::new(
+            ValueSource::File(Arc::new(SystemPathBuf::from_path_buf_lossy(
+                path.to_path_buf(),
+            ))),
+            true,
+        );
+        let shared: Options =
+            toml::Value::Table(tuff_lint::config::standard_options(path)?).try_into()?;
+        ruff.extend = shared.extend.or(ruff.extend);
+        ruff.line_length = shared.line_length.or(ruff.line_length);
+        ruff.target_version = shared.target_version.or(ruff.target_version);
+        ruff.include = shared.include.or(ruff.include);
+        ruff.exclude = shared.exclude.or(ruff.exclude);
+        if let Some(shared) = shared.format {
+            let format = ruff.format.get_or_insert_with(Default::default);
+            format.quote_style = shared.quote_style.or(format.quote_style);
+            format.indent_style = shared.indent_style.or(format.indent_style);
+            format.line_ending = shared.line_ending.or(format.line_ending);
+        }
         if ruff.target_version.is_none() {
             if let Some(project) = pyproject.project {
                 if let Some(requires_python) = project.requires_python {
@@ -298,7 +337,13 @@ mod tests {
 [tool.black]
 ",
         )?;
-        assert_eq!(pyproject.tool, Some(Tools { ruff: None }));
+        assert_eq!(
+            pyproject.tool,
+            Some(Tools {
+                ruff: None,
+                tuff: None
+            })
+        );
 
         let pyproject: Pyproject = toml::from_str(
             r"
@@ -309,6 +354,7 @@ mod tests {
         assert_eq!(
             pyproject.tool,
             Some(Tools {
+                tuff: None,
                 ruff: Some(Options::default())
             })
         );
@@ -323,6 +369,7 @@ line-length = 79
         assert_eq!(
             pyproject.tool,
             Some(Tools {
+                tuff: None,
                 ruff: Some(Options {
                     line_length: Some(LineLength::try_from(79).unwrap()),
                     ..Options::default()
@@ -340,6 +387,7 @@ exclude = ["foo.py"]
         assert_eq!(
             pyproject.tool,
             Some(Tools {
+                tuff: None,
                 ruff: Some(Options {
                     exclude: Some(vec!["foo.py".to_string()]),
                     ..Options::default()
@@ -357,6 +405,7 @@ select = ["E501"]
         assert_eq!(
             pyproject.tool,
             Some(Tools {
+                tuff: None,
                 ruff: Some(Options {
                     lint: Some(LintOptions {
                         common: LintCommonOptions {
@@ -381,6 +430,7 @@ ignore = ["E501"]
         assert_eq!(
             pyproject.tool,
             Some(Tools {
+                tuff: None,
                 ruff: Some(Options {
                     lint: Some(LintOptions {
                         common: LintCommonOptions {
@@ -422,6 +472,7 @@ strict-checking = false
         assert_eq!(
             pyproject.tool,
             Some(Tools {
+                tuff: None,
                 ruff: Some(Options {
                     lint: Some(LintOptions {
                         common: LintCommonOptions {

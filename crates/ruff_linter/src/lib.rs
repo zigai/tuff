@@ -48,6 +48,7 @@ pub mod source_kind;
 pub mod suppression;
 mod text_helpers;
 pub mod toml;
+mod tuff;
 pub mod upstream_categories;
 mod violation;
 

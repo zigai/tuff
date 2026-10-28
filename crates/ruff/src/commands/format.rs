@@ -45,8 +45,7 @@ use tuff_python_formatter::{FormatModuleError, TuffCustomOptions};
 use crate::args::{ConfigArguments, FormatArguments, FormatRange};
 use crate::cache::{Cache, FileCacheKey, PackageCacheMap, PackageCaches};
 use crate::tuff::format::{
-    FormatCacheKey, custom_options_for_source_kind, custom_options_for_source_type,
-    format_notebook_cell, format_python_range, format_python_source,
+    FormatCacheKey, format_notebook_cell, format_python_range, format_python_source,
 };
 use crate::{ExitStatus, resolve_default_files};
 
@@ -264,8 +263,7 @@ pub(crate) fn format_path(
     range: Option<FormatRange>,
     cache: Option<&Cache>,
 ) -> Result<FormatResult, FormatCommandError> {
-    let tuff_custom_options = custom_options_for_source_type(source_type, path)
-        .map_err(|err| FormatCommandError::TuffConfig(Some(path.to_path_buf()), err))?;
+    let tuff_custom_options = settings.custom.clone();
 
     if let Some(cache) = cache {
         let relative_path = cache
@@ -374,9 +372,7 @@ pub(crate) fn format_source(
     settings: &FormatterSettings,
     range: Option<FormatRange>,
 ) -> Result<FormattedSource, FormatCommandError> {
-    let tuff_custom_options = custom_options_for_source_kind(source_kind, path)
-        .map_err(|err| FormatCommandError::TuffConfig(path.map(Path::to_path_buf), err))?;
-    format_source_with_custom_options(source_kind, path, settings, range, &tuff_custom_options)
+    format_source_with_custom_options(source_kind, path, settings, range, &settings.custom)
 }
 
 fn format_source_with_custom_options(
@@ -879,7 +875,6 @@ pub(crate) enum FormatCommandError {
     Panic(Option<PathBuf>, Box<PanicError>),
     Read(Option<PathBuf>, SourceError),
     Format(Option<PathBuf>, FormatModuleError),
-    TuffConfig(Option<PathBuf>, anyhow::Error),
     Write(Option<PathBuf>, SourceError),
     RangeFormatNotSupported(Option<PathBuf>),
 }
@@ -916,7 +911,6 @@ impl FormatCommandError {
             Self::Panic(path, _)
             | Self::Read(path, _)
             | Self::Format(path, _)
-            | Self::TuffConfig(path, _)
             | Self::Write(path, _)
             | Self::RangeFormatNotSupported(path) => path.as_deref(),
         }
@@ -954,9 +948,6 @@ impl From<&FormatCommandError> for Diagnostic {
                 Diagnostic::new(DiagnosticId::Io, Severity::Error, source_error)
             }
             FormatCommandError::Format(_, format_module_error) => format_module_error.into(),
-            FormatCommandError::TuffConfig(_, error) => {
-                Diagnostic::new(DiagnosticId::InvalidCliOption, Severity::Error, error)
-            }
             FormatCommandError::RangeFormatNotSupported(_) => Diagnostic::new(
                 DiagnosticId::InvalidCliOption,
                 Severity::Error,
@@ -1037,23 +1028,6 @@ impl Display for FormatCommandError {
                     )
                 } else {
                     write!(f, "{header} {err}", header = "Failed to format:".bold())
-                }
-            }
-            Self::TuffConfig(path, err) => {
-                if let Some(path) = path {
-                    write!(
-                        f,
-                        "{}{}{} {err}",
-                        "Failed to load tuff config for ".bold(),
-                        fs::relativize_path(path).bold(),
-                        ":".bold()
-                    )
-                } else {
-                    write!(
-                        f,
-                        "{header} {err}",
-                        header = "Failed to load tuff config:".bold()
-                    )
                 }
             }
             Self::RangeFormatNotSupported(path) => {

@@ -216,6 +216,8 @@ pub struct LinterSettings {
     pub project_root: PathBuf,
 
     pub rules: RuleTable,
+    pub tuff: tuff_lint::Settings,
+    pub tuff_format: tuff_python_formatter::PyFormatOptions,
     pub per_file_ignores: CompiledPerFileIgnoreList,
     pub fix_safety: FixSafetyTable,
 
@@ -792,6 +794,8 @@ impl LinterSettings {
             unresolved_target_version: TargetVersion(None),
             per_file_target_version: CompiledPerFileTargetVersionList::default(),
             project_root: project_root.to_path_buf(),
+            tuff: tuff_lint::Settings::defaults(project_root.to_path_buf()),
+            tuff_format: tuff_python_formatter::PyFormatOptions::default(),
             rules: DEFAULT_SELECTORS
                 .iter()
                 .flat_map(|selector| selector.rules(&PreviewOptions::default()))

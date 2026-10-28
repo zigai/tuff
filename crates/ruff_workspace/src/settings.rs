@@ -179,6 +179,7 @@ impl FileResolverSettings {
 
 #[derive(CacheKey, Clone, Debug)]
 pub struct FormatterSettings {
+    pub custom: tuff_python_formatter::TuffCustomOptions,
     pub exclude: FilePatternSet,
     pub extension: ExtensionMapping,
     pub preview: PreviewMode,
@@ -211,6 +212,68 @@ pub struct FormatterSettings {
 }
 
 impl FormatterSettings {
+    pub fn to_tuff_format_options(
+        &self,
+        source_type: PySourceType,
+        source: &str,
+        path: Option<&Path>,
+    ) -> tuff_python_formatter::PyFormatOptions {
+        let target_version = path
+            .map(|path| self.resolve_target_version(path))
+            .unwrap_or(self.unresolved_target_version);
+
+        let line_ending = self.line_ending.resolve(source);
+
+        let quote_style = match self.quote_style {
+            QuoteStyle::Single => tuff_python_formatter::QuoteStyle::Single,
+            QuoteStyle::Double => tuff_python_formatter::QuoteStyle::Double,
+            QuoteStyle::Preserve => tuff_python_formatter::QuoteStyle::Preserve,
+        };
+        let magic_trailing_comma = match self.magic_trailing_comma {
+            MagicTrailingComma::Ignore => tuff_python_formatter::MagicTrailingComma::Ignore,
+            MagicTrailingComma::Respect => tuff_python_formatter::MagicTrailingComma::Respect,
+        };
+        let preview = if self.preview.is_enabled() {
+            tuff_python_formatter::PreviewMode::Enabled
+        } else {
+            tuff_python_formatter::PreviewMode::Disabled
+        };
+        let nested_string_quote_style = match self.nested_string_quote_style {
+            NestedStringQuoteStyle::Preferred => {
+                tuff_python_formatter::NestedStringQuoteStyle::Preferred
+            }
+            NestedStringQuoteStyle::Alternating => {
+                tuff_python_formatter::NestedStringQuoteStyle::Alternating
+            }
+        };
+        let docstring_code = match self.docstring_code_format {
+            DocstringCode::Enabled => tuff_python_formatter::DocstringCode::Enabled,
+            DocstringCode::Disabled => tuff_python_formatter::DocstringCode::Disabled,
+        };
+        let docstring_code_line_width = match self.docstring_code_line_width {
+            DocstringCodeLineWidth::Fixed(line_width) => {
+                tuff_python_formatter::DocstringCodeLineWidth::Fixed(line_width)
+            }
+            DocstringCodeLineWidth::Dynamic => {
+                tuff_python_formatter::DocstringCodeLineWidth::Dynamic
+            }
+        };
+
+        tuff_python_formatter::PyFormatOptions::from_source_type(source_type)
+            .with_target_version(target_version)
+            .with_indent_style(self.indent_style)
+            .with_indent_width(self.indent_width)
+            .with_quote_style(quote_style)
+            .with_nested_string_quote_style(nested_string_quote_style)
+            .with_magic_trailing_comma(magic_trailing_comma)
+            .with_preview(preview)
+            .with_line_ending(line_ending)
+            .with_line_width(self.line_width)
+            .with_docstring_code(docstring_code)
+            .with_docstring_code_line_width(docstring_code_line_width)
+            .with_custom(self.custom.clone())
+    }
+
     pub fn to_format_options(
         &self,
         source_type: PySourceType,
@@ -221,26 +284,7 @@ impl FormatterSettings {
             .map(|path| self.resolve_target_version(path))
             .unwrap_or(self.unresolved_target_version);
 
-        let line_ending = match self.line_ending {
-            LineEnding::Lf => ruff_formatter::printer::LineEnding::LineFeed,
-            LineEnding::CrLf => ruff_formatter::printer::LineEnding::CarriageReturnLineFeed,
-            #[cfg(target_os = "windows")]
-            LineEnding::Native => ruff_formatter::printer::LineEnding::CarriageReturnLineFeed,
-            #[cfg(not(target_os = "windows"))]
-            LineEnding::Native => ruff_formatter::printer::LineEnding::LineFeed,
-            LineEnding::Auto => match find_newline(source) {
-                Some((_, ruff_source_file::LineEnding::Lf)) => {
-                    ruff_formatter::printer::LineEnding::LineFeed
-                }
-                Some((_, ruff_source_file::LineEnding::CrLf)) => {
-                    ruff_formatter::printer::LineEnding::CarriageReturnLineFeed
-                }
-                Some((_, ruff_source_file::LineEnding::Cr)) => {
-                    ruff_formatter::printer::LineEnding::CarriageReturn
-                }
-                None => ruff_formatter::printer::LineEnding::LineFeed,
-            },
-        };
+        let line_ending = self.line_ending.resolve(source);
 
         PyFormatOptions::from_source_type(source_type)
             .with_target_version(target_version)
@@ -273,6 +317,7 @@ impl Default for FormatterSettings {
         let default_options = PyFormatOptions::default();
 
         Self {
+            custom: tuff_python_formatter::TuffCustomOptions::default(),
             exclude: FilePatternSet::default(),
             extension: ExtensionMapping::default(),
             unresolved_target_version: default_options.target_version(),
@@ -337,6 +382,31 @@ pub enum LineEnding {
 
     /// Line endings will be converted to `\n` on Unix and `\r\n` on Windows.
     Native,
+}
+
+impl LineEnding {
+    fn resolve(self, source: &str) -> ruff_formatter::printer::LineEnding {
+        match self {
+            LineEnding::Lf => ruff_formatter::printer::LineEnding::LineFeed,
+            LineEnding::CrLf => ruff_formatter::printer::LineEnding::CarriageReturnLineFeed,
+            #[cfg(target_os = "windows")]
+            LineEnding::Native => ruff_formatter::printer::LineEnding::CarriageReturnLineFeed,
+            #[cfg(not(target_os = "windows"))]
+            LineEnding::Native => ruff_formatter::printer::LineEnding::LineFeed,
+            LineEnding::Auto => match find_newline(source) {
+                Some((_, ruff_source_file::LineEnding::Lf)) => {
+                    ruff_formatter::printer::LineEnding::LineFeed
+                }
+                Some((_, ruff_source_file::LineEnding::CrLf)) => {
+                    ruff_formatter::printer::LineEnding::CarriageReturnLineFeed
+                }
+                Some((_, ruff_source_file::LineEnding::Cr)) => {
+                    ruff_formatter::printer::LineEnding::CarriageReturn
+                }
+                None => ruff_formatter::printer::LineEnding::LineFeed,
+            },
+        }
+    }
 }
 
 impl fmt::Display for LineEnding {

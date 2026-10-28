@@ -3629,6 +3629,7 @@ pub(crate) fn check_ast(
     checker.semantic.scope_id = ScopeId::global();
     checker.analyze.scopes.push(ScopeId::global());
     analyze::deferred_scopes(&checker);
+    crate::tuff::check(&checker, parsed, path, context);
 
     let Checker {
         semantic_errors, ..
@@ -3643,6 +3644,7 @@ pub(crate) fn check_ast(
 /// a [`Violation`] to the contained [`Diagnostic`] collection on `Drop`.
 pub(crate) struct LintContext<'a> {
     diagnostics: RefCell<Vec<Diagnostic>>,
+    spacing_decisions: RefCell<Vec<tuff_lint::builtin::spacing::GapDecision>>,
     source_file: LazySourceFile<'a>,
     rules: RuleTable,
     settings: &'a LinterSettings,
@@ -3656,13 +3658,32 @@ impl<'a> LintContext<'a> {
         for ignore in crate::fs::ignores_from_path(path, &settings.per_file_ignores) {
             rules.disable(ignore);
         }
+        crate::tuff::replace_overlaps(
+            &mut rules,
+            settings,
+            settings.resolve_target_version(path).linter_version(),
+        );
 
         Self {
             diagnostics: RefCell::default(),
+            spacing_decisions: RefCell::default(),
             source_file: LazySourceFile::new(path, contents),
             rules,
             settings,
         }
+    }
+
+    pub(crate) fn set_spacing_decisions(
+        &self,
+        decisions: Vec<tuff_lint::builtin::spacing::GapDecision>,
+    ) {
+        *self.spacing_decisions.borrow_mut() = decisions;
+    }
+
+    pub(crate) fn take_spacing_decisions(
+        &mut self,
+    ) -> Vec<tuff_lint::builtin::spacing::GapDecision> {
+        std::mem::take(self.spacing_decisions.get_mut())
     }
 
     /// Return a [`DiagnosticGuard`] for reporting a diagnostic.
@@ -3797,6 +3818,10 @@ impl<'a> LintContext<'a> {
 
     pub(crate) fn source_file(&self) -> &SourceFile {
         self.source_file.get()
+    }
+
+    pub(crate) fn push_diagnostic(&self, diagnostic: Diagnostic) {
+        self.diagnostics.borrow_mut().push(diagnostic);
     }
 }
 
