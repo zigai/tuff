@@ -4685,6 +4685,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "tuff_lint"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "globset",
+ "indexmap",
+ "regex",
+ "ruff_cache",
+ "ruff_diagnostics",
+ "ruff_python_ast",
+ "ruff_python_parser",
+ "ruff_python_semantic",
+ "ruff_python_trivia",
+ "ruff_source_file",
+ "ruff_text_size",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "toml 1.1.6+spec-1.1.0",
+ "walkdir",
+]
+
+[[package]]
+name = "tuff_lint_macros"
+version = "0.0.0"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "ruff_python_ast",
+ "syn 3.0.6",
+ "tuff_lint",
+]
+
+[[package]]
 name = "tuff_python_formatter"
 version = "0.0.0"
 dependencies = [

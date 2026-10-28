@@ -43,6 +43,8 @@ ruff_python_trivia = { version = "0.0.18", path = "crates/ruff_python_trivia" }
 ruff_server = { version = "0.0.18", path = "crates/ruff_server" }
 ruff_source_file = { version = "0.0.18", path = "crates/ruff_source_file" }
 tuff_python_formatter = { path = "crates/tuff_python_formatter" }
+tuff_lint = { path = "crates/tuff_lint" }
+tuff_lint_macros = { path = "crates/tuff_lint_macros" }
 ruff_mdtest = { path = "crates/ruff_mdtest" }
 ruff_ranged_value = { version = "0.0.18", path = "crates/ruff_ranged_value" }
 ruff_text_size = { version = "0.0.18", path = "crates/ruff_text_size" }
