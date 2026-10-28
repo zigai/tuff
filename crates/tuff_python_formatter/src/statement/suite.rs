@@ -8,6 +8,7 @@ use ruff_python_trivia::{
     SimpleTokenKind, SimpleTokenizer, lines_after, lines_after_ignoring_end_of_line_trivia,
     lines_before,
 };
+use ruff_source_file::LineRanges;
 use ruff_text_size::{Ranged, TextRange};
 
 use crate::comments::{
@@ -15,6 +16,7 @@ use crate::comments::{
     trailing_comments,
 };
 use crate::context::{NodeLevel, TopLevelStatementPosition, WithIndentLevel, WithNodeLevel};
+use crate::custom::blank_lines;
 use crate::other::string_literal::StringLiteralKind;
 use crate::prelude::*;
 use crate::statement::trailing_semicolon;
@@ -22,6 +24,7 @@ use crate::verbatim::{
     write_skipped_statements, write_suppressed_statements_starting_with_leading_comment,
     write_suppressed_statements_starting_with_trailing_comment,
 };
+use tuff_lint::builtin::spacing::GapKind;
 
 /// Level at which the [`Suite`] appears in the source code.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -125,6 +128,11 @@ impl FormatRule<Suite, PyFormatContext<'_>> for FormatSuite {
                 if is_class_or_function_definition(first)
                     && !comments.has_leading(first)
                     && !source_type.is_stub()
+                    && f.context()
+                        .custom_layout()
+                        .blank_lines
+                        .leading(first.start())
+                        .is_none()
                 {
                     // Add an empty line for any nested functions or classes defined within
                     // non-function or class compound statements, e.g., this is stable formatting:
@@ -197,7 +205,19 @@ impl FormatRule<Suite, PyFormatContext<'_>> for FormatSuite {
                 .first()
                 .map_or_else(|| first.start(), Ranged::start);
 
-            if allow_newline_after_block_open && lines_before(start, f.context().source()) > 1 {
+            if let Some(blanks) = f
+                .context()
+                .custom_layout()
+                .blank_lines
+                .leading(first.start())
+            {
+                // The block indent owns the mandatory newline. Only emit the optional blanks.
+                for _ in 0..blanks {
+                    empty_line().fmt(f)?;
+                }
+            } else if allow_newline_after_block_open
+                && lines_before(start, f.context().source()) > 1
+            {
                 empty_line().fmt(f)?;
             }
 
@@ -238,7 +258,13 @@ impl FormatRule<Suite, PyFormatContext<'_>> for FormatSuite {
             // Add empty lines before and after a function or class definition. If the preceding
             // node is a function or class, and contains trailing comments, then the statement
             // itself will add the requisite empty lines when formatting its comments.
-            if needs_empty_lines {
+            if let Some(blanks) = f.context().custom_layout().blank_lines.between(
+                GapKind::BetweenStatements,
+                preceding.start(),
+                following.start(),
+            ) {
+                blank_lines::separator(blanks, f)?;
+            } else if needs_empty_lines {
                 if source_type.is_stub() {
                     stub_file_empty_lines(
                         self.kind,
@@ -330,7 +356,7 @@ impl FormatRule<Suite, PyFormatContext<'_>> for FormatSuite {
                     following.start()
                 };
 
-                match lines_before(start, source) {
+                match blank_lines::lines_before(start, f) {
                     0 | 1 => hard_line_break().fmt(f)?,
                     2 => empty_line().fmt(f)?,
                     _ => match self.kind {
@@ -469,6 +495,14 @@ impl FormatSuite {
         comments: &Comments,
         f: &mut PyFormatter,
     ) -> FormatResult<()> {
+        if statements.last().is_some_and(|last| {
+            let plan = &f.context().custom_layout().blank_lines;
+            plan.trailing(last.start()).is_some()
+                || plan.owns_case_separator_at(f.context().source().full_line_end(last.end()))
+        }) {
+            return Ok(());
+        }
+
         if self.kind.last_suite_in_statement() {
             // If we're at the end of the current statement, the outer suite will insert one or
             // two empty lines already.
@@ -803,7 +837,7 @@ pub(crate) struct DocstringStmt<'a> {
 
 impl<'a> DocstringStmt<'a> {
     /// Checks if the statement is a simple string that can be formatted as a docstring
-    fn try_from_statement(
+    pub(crate) fn try_from_statement(
         stmt: &'a Stmt,
         suite_kind: SuiteKind,
         context: &PyFormatContext,

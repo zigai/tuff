@@ -27,6 +27,7 @@ ruff_python_parser = { workspace = true }
 ruff_python_trivia = { workspace = true }
 ruff_source_file = { workspace = true }
 ruff_text_size = { workspace = true }
+tuff_lint = { workspace = true }
 
 anyhow = { workspace = true }
 clap = { workspace = true }

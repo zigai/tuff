@@ -21,6 +21,10 @@ impl FormatNodeRule<StmtDelete> for FormatStmtDelete {
 
         write!(f, [token("del"), space()])?;
 
+        if crate::custom::collections::delete(item, f)? {
+            return Ok(());
+        }
+
         match targets.as_slice() {
             [] => {
                 write!(

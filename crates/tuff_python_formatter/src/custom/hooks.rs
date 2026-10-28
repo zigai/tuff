@@ -1,6 +1,9 @@
-use ruff_formatter::Format;
-use ruff_formatter::FormatResult;
+use std::num::NonZeroU8;
+
+use ruff_formatter::format_element::TextWidth;
+use ruff_formatter::format_element::document::Document;
 use ruff_formatter::prelude::{space, text, token};
+use ruff_formatter::{Format, FormatElement, FormatOptions, FormatResult, Formatted};
 use ruff_python_ast as ast;
 use ruff_python_ast::{AnyNodeRef, Expr, Stmt};
 use ruff_text_size::Ranged;
@@ -33,7 +36,8 @@ pub(crate) enum CollectionSubject {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CollectionDecision {
     UseRuffDefault,
-    PreferFlat,
+    PreferCompact,
+    CompactExpanded,
     Fill,
     ForceExpanded,
     PreserveInput,
@@ -127,7 +131,12 @@ pub(crate) fn before_default_equals(
 pub(crate) fn dict_key_value_separator(
     f: &mut PyFormatter,
     item: &ast::DictItem,
+    aligned: bool,
 ) -> FormatResult<()> {
+    if !aligned {
+        token(":").fmt(f)?;
+        return space().fmt(f);
+    }
     let decision = f
         .context()
         .custom_layout()
@@ -296,20 +305,19 @@ pub(crate) fn collection_layout(
     has_comments: bool,
     has_magic_trailing_comma: bool,
 ) -> CollectionDecision {
-    if f.context().docstring().is_some() || has_comments || has_magic_trailing_comma {
+    let policy = crate::custom::collections::policy(f, subject);
+    if !crate::custom::collections::can_pack(f) || has_comments {
         return CollectionDecision::UseRuffDefault;
     }
 
-    let policy = match subject {
-        CollectionSubject::List => &f.context().custom_options().collections.lists,
-        CollectionSubject::Dict => &f.context().custom_options().collections.dicts,
-        CollectionSubject::Tuple => &f.context().custom_options().collections.tuples,
-        CollectionSubject::Set => &f.context().custom_options().collections.sets,
-    };
-
     match policy.layout {
         CollectionLayout::RuffDefault => CollectionDecision::UseRuffDefault,
-        CollectionLayout::PreferCompact => CollectionDecision::PreferFlat,
+        CollectionLayout::PreferCompact
+            if has_magic_trailing_comma && !policy.ignore_magic_trailing_comma =>
+        {
+            CollectionDecision::CompactExpanded
+        }
+        CollectionLayout::PreferCompact => CollectionDecision::PreferCompact,
         CollectionLayout::Fill => CollectionDecision::Fill,
         CollectionLayout::ForceExpanded => CollectionDecision::ForceExpanded,
         CollectionLayout::ExpandIfMoreThan { threshold } => {
@@ -349,8 +357,27 @@ pub(crate) fn one_line_suite_layout(
     if !statement_comments.leading.is_empty()
         || !statement_comments.dangling.is_empty()
         || !statement_comments.trailing.is_empty()
+        || (matches!(
+            clause,
+            OneLineSuiteClause::Function | OneLineSuiteClause::Class
+        ) && f.context().comments().contains_comments(statement.into()))
     {
         return OneLineSuiteDecision::UseBlock;
+    }
+
+    // A leading string expression in a definition is a docstring, not an ordinary
+    // expression statement. Keep its opt-in independent of the expression allowlist.
+    if matches!(
+        clause,
+        OneLineSuiteClause::Function | OneLineSuiteClause::Class
+    ) && let Stmt::Expr(expression) = statement
+        && expression.value.is_string_literal_expr()
+    {
+        return if matches!(options.docstrings, FeatureMode::Enabled) {
+            OneLineSuiteDecision::PreferOneLine
+        } else {
+            OneLineSuiteDecision::UseBlock
+        };
     }
 
     if statement_is_allowed(statement, &options.statements) {
@@ -358,6 +385,25 @@ pub(crate) fn one_line_suite_layout(
     } else {
         OneLineSuiteDecision::UseBlock
     }
+}
+
+pub(crate) fn one_line_definition_fits(
+    f: &PyFormatter,
+    content: &[FormatElement],
+) -> FormatResult<bool> {
+    let document = Document::from(content.to_vec());
+    let indentation = f
+        .context()
+        .indent_level()
+        .to_ascii_spaces(NonZeroU8::MIN.into());
+    let printed = Formatted::new(document, f.context()).print_with_indent(indentation)?;
+    let width = TextWidth::from_text(
+        printed.as_code().trim_end_matches(['\r', '\n']),
+        f.options().indent_width(),
+    );
+    Ok(width
+        .width()
+        .is_some_and(|width| width.value() <= u32::from(f.options().line_width().value())))
 }
 
 fn statement_is_allowed(statement: &Stmt, allowed: &[OneLineSuiteStatement]) -> bool {

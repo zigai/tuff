@@ -35,9 +35,14 @@ impl FormatNodeRule<Arguments> for FormatArguments {
             return write!(f, [empty_parenthesized("(", dangling, ")")]);
         }
 
+        if crate::custom::packing::arguments(item, f)? {
+            return Ok(());
+        }
+
         let all_arguments = format_with(|f: &mut PyFormatter| {
             let source = f.context().source();
-            let mut joiner = f.join_comma_separated(range.end());
+            let end = crate::custom::packing::argument_sequence_end(item, f);
+            let mut joiner = f.join_comma_separated(end);
             match args.as_ref() {
                 [arg] if keywords.is_empty() => {
                     match arg {

@@ -1,7 +1,8 @@
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use ruff_formatter::SourceCode;
 use ruff_python_ast::token::Tokens;
+use ruff_python_ast::visitor::source_order::{self, SourceOrderVisitor};
 use ruff_python_ast::{self as ast, AnyNodeRef, Expr, Stmt};
 use ruff_source_file::LineIndex;
 use ruff_text_size::{Ranged, TextRange};
@@ -20,6 +21,7 @@ pub struct TuffLayoutPlan {
     pub alignment: AlignmentPlan,
     pub collections: CollectionPlan,
     pub blank_lines: BlankLinePlan,
+    pub(crate) unpacked_arguments: FxHashSet<TextRange>,
     pub diagnostics: Vec<CustomLayoutDiagnostic>,
 }
 
@@ -28,7 +30,31 @@ impl TuffLayoutPlan {
         self.alignment.is_empty()
             && self.collections.is_empty()
             && self.blank_lines.is_empty()
+            && self.unpacked_arguments.is_empty()
             && self.diagnostics.is_empty()
+    }
+}
+
+struct ArgumentPackingVisitor<'c, 'src> {
+    comments: &'c Comments<'src>,
+    unpacked: &'c mut FxHashSet<TextRange>,
+    depth: usize,
+    commented: bool,
+}
+
+impl<'a> SourceOrderVisitor<'a> for ArgumentPackingVisitor<'_, '_> {
+    fn visit_expr(&mut self, expr: &'a Expr) {
+        if self.depth == 0 {
+            self.commented = self.comments.contains_comments(expr.into());
+        }
+        if self.commented
+            && let Expr::Call(call) = expr
+        {
+            self.unpacked.insert(call.arguments.range());
+        }
+        self.depth += 1;
+        source_order::walk_expr(self, expr);
+        self.depth -= 1;
     }
 }
 
@@ -91,18 +117,7 @@ impl CollectionPlan {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct BlankLinePlan;
-
-impl BlankLinePlan {
-    #[expect(
-        clippy::unused_self,
-        reason = "plan shape will grow with blank-line decisions"
-    )]
-    pub const fn is_empty(&self) -> bool {
-        true
-    }
-}
+pub(crate) use crate::custom::blank_lines::BlankLinePlan;
 
 #[expect(
     clippy::unnecessary_wraps,
@@ -127,6 +142,16 @@ pub(crate) fn build_layout_plan(
         return Ok(plan);
     };
     let index = LineIndex::from_source_text(source.as_str());
+
+    if !options.arguments.calls.is_disabled() || !options.arguments.mixed.is_disabled() {
+        ArgumentPackingVisitor {
+            comments,
+            unpacked: &mut plan.unpacked_arguments,
+            depth: 0,
+            commented: false,
+        }
+        .visit_body(&module.body);
+    }
 
     if matches!(options.alignment.class_fields, AlignmentMode::Enabled) {
         analyze_class_fields(

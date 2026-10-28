@@ -11,7 +11,7 @@ use ruff_formatter::prelude::*;
 use ruff_formatter::{
     FormatError, FormatOptions, Formatted, PrintError, Printed, SourceCode, format, write,
 };
-use ruff_python_ast::{AnyNodeRef, Mod};
+use ruff_python_ast::{AnyNodeRef, Mod, ModModule};
 use ruff_python_parser::{ParseError, ParseOptions, Parsed, parse};
 use ruff_python_trivia::TriviaRanges;
 use ruff_text_size::{Ranged, TextRange};
@@ -20,10 +20,11 @@ use crate::comments::{
     Comments, SourceComment, has_skip_comment, leading_comments, trailing_comments,
 };
 pub use crate::context::PyFormatContext;
+pub use crate::custom::blank_lines::SpacingMetrics;
 pub use crate::custom::{
-    AlignmentMode, AlignmentOptions, AssignmentAlignmentScope, BlankLineOptions,
+    AlignmentMode, AlignmentOptions, ArgumentOptions, AssignmentAlignmentScope,
     ClassFieldAlignmentScope, CollectionLayout, CollectionOptions, CollectionPolicy, CommaOptions,
-    DictAlignmentMode, DocstringOptions, FeatureMode, FunctionParamAlignmentScope,
+    DictAlignmentMode, DocstringOptions, FeatureMode, FunctionParamAlignmentScope, ImportOptions,
     OneLineSuiteClause, OneLineSuiteOptions, OneLineSuiteStatement, TuffCustomOptions,
     TuffLayoutPlan,
 };
@@ -167,6 +168,21 @@ pub fn format_module_ast<'a>(
     format_node(parsed, trivia, source, options)
 }
 
+/// Print the module's layout before applying blank-line constraints, retaining source maps.
+pub fn measure_module_layout(
+    parsed: &Parsed<ModModule>,
+    source: &str,
+    mut options: PyFormatOptions,
+) -> FormatResult<Printed> {
+    let mut custom = options.custom().clone();
+    custom.blank_lines.rules.clear();
+    options = options
+        .with_custom(custom)
+        .with_source_map_generation(ruff_formatter::printer::SourceMapGeneration::Enabled);
+    let trivia = TriviaRanges::from(parsed.tokens());
+    Ok(format_node(parsed, &trivia, source, options)?.print()?)
+}
+
 fn format_node<'a, N>(
     parsed: &'a Parsed<N>,
     trivia: &'a TriviaRanges,
@@ -179,15 +195,7 @@ where
 {
     let source_code = SourceCode::new(source);
     let comments = Comments::from_ast(parsed.syntax(), source_code, trivia);
-    let custom_layout = custom::layout::build_layout_plan(
-        parsed.syntax().into(),
-        parsed.tokens(),
-        &comments,
-        source_code,
-        options.custom(),
-        usize::from(options.line_width().value()),
-    )
-    .map_err(|_| FormatError::syntax_error("failed to build tuff custom layout plan"))?;
+    let custom_layout = build_file_layout_plan(parsed, trivia, source, &comments, &options)?;
 
     let formatted = format!(
         PyFormatContext::new(options, source, comments, trivia, parsed.tokens())
@@ -199,6 +207,54 @@ where
         .comments()
         .assert_all_formatted(source_code);
     Ok(formatted)
+}
+
+// Dry-render comments must be independent: formatting marks comments as consumed.
+fn build_file_layout_plan<'a, N>(
+    parsed: &'a Parsed<N>,
+    trivia: &'a TriviaRanges,
+    source: &'a str,
+    comments: &Comments<'a>,
+    options: &PyFormatOptions,
+) -> FormatResult<TuffLayoutPlan>
+where
+    N: AsFormat<PyFormatContext<'a>> + Ranged,
+    &'a N: Into<AnyNodeRef<'a>>,
+{
+    let mut plan = custom::layout::build_layout_plan(
+        parsed.syntax().into(),
+        parsed.tokens(),
+        comments,
+        SourceCode::new(source),
+        options.custom(),
+        usize::from(options.line_width().value()),
+    )
+    .map_err(|_| FormatError::syntax_error("failed to build tuff custom layout plan"))?;
+    let blank_lines = &options.custom().blank_lines;
+    if blank_lines.is_disabled() {
+        return Ok(plan);
+    }
+    tuff_lint::builtin::spacing::validate(&blank_lines.rules)
+        .map_err(|_| custom::blank_lines::conflict())?;
+    if let AnyNodeRef::ModModule(module) = parsed.syntax().into() {
+        let dry_comments = Comments::from_ast(parsed.syntax(), SourceCode::new(source), trivia);
+        let dry = format!(
+            PyFormatContext::new(
+                options.clone().with_source_map_generation(
+                    ruff_formatter::printer::SourceMapGeneration::Enabled,
+                ),
+                source,
+                dry_comments,
+                trivia,
+                parsed.tokens(),
+            )
+            .with_custom_layout(plan.clone()),
+            [parsed.syntax().format()]
+        )?
+        .print()?;
+        plan.blank_lines = custom::layout::BlankLinePlan::build(module, source, blank_lines, &dry)?;
+    }
+    Ok(plan)
 }
 
 pub fn formatted_file(db: &dyn Db, file: File) -> Result<Option<String>, FormatModuleError> {

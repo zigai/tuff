@@ -59,6 +59,12 @@ impl FormatNodeRule<Parameters> for FormatParameters {
             kwarg,
         } = item;
 
+        if self.parentheses == ParametersParentheses::Preserve
+            && crate::custom::packing::parameters(item, f)?
+        {
+            return Ok(());
+        }
+
         let (slash, star) = find_parameter_separators(f.context().source(), item);
 
         let comments = f.context().comments().clone();
@@ -230,6 +236,7 @@ impl FormatNodeRule<Parameters> for FormatParameters {
                 write!(f, [if_group_breaks(&token(","))])?;
 
                 if f.options().magic_trailing_comma().is_respect()
+                    && !crate::custom::packing::ignore_parameter_magic_comma(item, f)
                     && has_trailing_comma(item, last_node, f.context().source())
                 {
                     // Make the magic trailing comma expand the group

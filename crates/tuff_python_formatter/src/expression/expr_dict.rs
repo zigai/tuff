@@ -3,6 +3,7 @@ use ruff_python_ast::{AnyNodeRef, DictItem, Expr, ExprDict};
 use ruff_text_size::{Ranged, TextRange};
 
 use crate::comments::{SourceComment, dangling_comments, leading_comments};
+use crate::custom::collections;
 use crate::custom::hooks::{self, CollectionDecision, CollectionSubject};
 use crate::expression::parentheses::{
     NeedsParentheses, OptionalParentheses, empty_parenthesized, parenthesized,
@@ -41,7 +42,13 @@ impl FormatNodeRule<ExprDict> for FormatExprDict {
             }));
 
         let format_pairs = format_with(|f| {
-            let mut joiner = f.join_comma_separated(item.end());
+            let end = collections::sequence_end(
+                f,
+                CollectionSubject::Dict,
+                items.last().map_or(item.end(), Ranged::end),
+                item.end(),
+            );
+            let mut joiner = f.join_comma_separated(end);
 
             let mut key_value_comments = key_value_comments;
             for dict_item in items {
@@ -62,8 +69,8 @@ impl FormatNodeRule<ExprDict> for FormatExprDict {
             f,
             CollectionSubject::Dict,
             items.len(),
-            !open_parenthesis_comments.is_empty() || !key_value_comments.is_empty(),
-            false,
+            collections::has_comments(f, item.range()),
+            collections::magic_comma(f, items.last().map_or(item.end(), Ranged::end), item.end()),
         );
         let source_is_multiline = f.context().source()[item.range()].contains('\n');
 
@@ -71,27 +78,35 @@ impl FormatNodeRule<ExprDict> for FormatExprDict {
             CollectionDecision::ForceExpanded => {
                 write!(f, [token("{"), block_indent(&format_pairs), token("}")])
             }
-            CollectionDecision::Fill if source_is_multiline => write!(
+            CollectionDecision::PreferCompact => collections::packed(
                 f,
-                [
-                    token("{"),
-                    block_indent(&format_with(|f| {
-                        let mut fill = f.fill();
-                        for dict_item in items {
-                            fill.entry(
-                                &format_args![token(","), soft_line_break_or_space()],
-                                &KeyValuePair::new(dict_item),
-                            );
-                        }
-                        fill.finish()?;
-                        token(",").fmt(f)
-                    })),
-                    token("}")
-                ]
+                "{",
+                "}",
+                items
+                    .iter()
+                    .map(|item| KeyValuePair::new(item).with_alignment(false)),
+                false,
+                false,
             ),
+            CollectionDecision::CompactExpanded | CollectionDecision::Fill
+                if source_is_multiline
+                    || collection_layout == CollectionDecision::CompactExpanded =>
+            {
+                collections::packed(
+                    f,
+                    "{",
+                    "}",
+                    items.iter().map(|item| {
+                        KeyValuePair::new(item)
+                            .with_alignment(collection_layout == CollectionDecision::Fill)
+                    }),
+                    true,
+                    false,
+                )
+            }
             CollectionDecision::UseRuffDefault
-            | CollectionDecision::PreferFlat
             | CollectionDecision::Fill
+            | CollectionDecision::CompactExpanded
             | CollectionDecision::PreserveInput => parenthesized("{", &format_pairs, "}")
                 .with_dangling_comments(open_parenthesis_comments)
                 .fmt(f),
@@ -110,21 +125,27 @@ impl NeedsParentheses for ExprDict {
 }
 
 #[derive(Debug)]
-struct KeyValuePair<'a> {
+pub(crate) struct KeyValuePair<'a> {
     item: &'a DictItem,
     key: &'a Option<Expr>,
     value: &'a Expr,
     comments: &'a [SourceComment],
+    aligned: bool,
 }
 
 impl<'a> KeyValuePair<'a> {
-    fn new(item: &'a DictItem) -> Self {
+    pub(crate) fn new(item: &'a DictItem) -> Self {
         Self {
             item,
             key: &item.key,
             value: &item.value,
             comments: &[],
+            aligned: true,
         }
+    }
+
+    pub(crate) fn with_alignment(self, aligned: bool) -> Self {
+        Self { aligned, ..self }
     }
 
     fn with_comments(self, comments: &'a [SourceComment]) -> Self {
@@ -148,16 +169,16 @@ impl Format<PyFormatContext<'_>> for KeyValuePair<'_> {
             write!(
                 f,
                 [group(&format_with(|f| {
-                    key.format().fmt(f)?;
+                    collections::expression(f, key, CollectionSubject::Dict)?;
 
                     if self.comments.is_empty() {
-                        hooks::dict_key_value_separator(f, self.item)?;
+                        hooks::dict_key_value_separator(f, self.item, self.aligned)?;
                     } else {
                         token(":").fmt(f)?;
                         dangling_comments(self.comments).fmt(f)?;
                     }
 
-                    self.value.format().fmt(f)
+                    collections::expression(f, self.value, CollectionSubject::Dict)
                 }))]
             )
         } else {
@@ -170,7 +191,14 @@ impl Format<PyFormatContext<'_>> for KeyValuePair<'_> {
                 [
                     // make sure the leading comments are hoisted past the `**`
                     leading_comments(leading_value_comments),
-                    group(&format_args![token("**"), self.value.format()])
+                    group(&format_args![
+                        token("**"),
+                        format_with(|f| collections::expression(
+                            f,
+                            self.value,
+                            CollectionSubject::Dict
+                        ))
+                    ])
                 ]
             )
         }

@@ -541,16 +541,39 @@ Single-line collections keep Ruff's normal formatting.
 
 ### Accepted Values
 
-| Value                   | Behavior                                                         |
-| ----------------------- | ---------------------------------------------------------------- |
-| `"ruff-default"`        | Use Ruff's normal collection formatting.                         |
-| `"force-expanded"`      | Expand non-empty collections onto multiple lines.                |
-| `"expand-if-more-than"` | Expand collections whose item count is greater than `threshold`. |
-| `"fill"`                | Pack already multiline collection items onto filled rows.        |
-| `"prefer-compact"`      | Accepted, currently equivalent to `"ruff-default"`.              |
-| `"preserve-input"`      | Accepted, currently equivalent to `"ruff-default"`.              |
+| Value                   | Behavior                                                          |
+| ----------------------- | ----------------------------------------------------------------- |
+| `"ruff-default"`        | Use Ruff's normal collection formatting.                          |
+| `"force-expanded"`      | Expand non-empty collections onto multiple lines.                 |
+| `"expand-if-more-than"` | Expand collections whose item count is greater than `threshold`.  |
+| `"fill"`                | Pack already multiline collection items onto filled rows.         |
+| `"prefer-compact"`      | Use one line when it fits; otherwise pack items onto filled rows. |
+| `"preserve-input"`      | Accepted, currently equivalent to `"ruff-default"`.               |
 
-Collections with comments or magic trailing commas keep Ruff's normal behavior.
+Collections with comments or inside flat string interpolations keep Ruff's normal behavior. Magic trailing commas keep collections expanded unless `ignore-magic-trailing-comma = true` is set on that collection policy. Packed dictionaries omit value-alignment padding.
+
+```toml
+[tool.tuff.format.collections]
+lists = { layout = "prefer-compact", ignore-magic-trailing-comma = true, compact-nested = true }
+```
+
+`compact-nested = true` packs nested collections as compact rows when the outer collection expands. Inner expansion policies and magic trailing commas still apply. Both switches default to `false`.
+
+Argument and import packing are independently opt-in:
+
+```toml
+[tool.tuff.format.arguments]
+calls = "enabled"
+parameters = "enabled"
+mixed = "enabled"
+ignore-magic-trailing-comma = true
+
+[tool.tuff.format.imports]
+mode = "enabled"
+ignore-magic-trailing-comma = true
+```
+
+`calls` packs call arguments; `parameters` packs function parameters, including `/`, `*`, and variadic parameters. `mixed` enables packing only for calls containing complex arguments; enabling `calls` also handles these calls. Import packing fills rows of `from ... import ...` aliases without sorting or merging imports. Modes default to `"disabled"`; comma switches default to `false`. Commented sequences, including comments on a call target, keep Ruff's layout. Related alignment options disable packing for their sequence kind, even when no padding is needed; trailing-comment alignment disables all argument and import packing.
 
 ## Docstring Sections
 
@@ -618,6 +641,8 @@ def process(callback):
 
 The colon stays in the output because Python requires it. Tuff only collapses a suite when the body has exactly one allowed statement, has no comments attached to the body statement, has no trailing comment after the clause colon, and fits within `line-length`.
 
+Include `"function"` or `"class"` in `clauses` to compact definitions. Use `statements = ["pass", "ellipsis"]` for trivial definitions only, or add `"return"` and other statement kinds to allow executable bodies. A sole docstring that fits on one line requires `docstrings = "enabled"`, independently of `statements`; docstrings are disabled by default. Docstrings that normalize to one line can also compact.
+
 Accepted `clauses` values:
 
 | Value          | Clause matched       |
@@ -632,6 +657,8 @@ Accepted `clauses` values:
 | `"except"`     | `except ...:`        |
 | `"finally"`    | `finally:`           |
 | `"match-case"` | `case pattern:`      |
+| `"function"`   | `def` / `async def`  |
+| `"class"`      | `class Name:`        |
 
 Accepted `statements` values:
 

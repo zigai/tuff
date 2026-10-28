@@ -9,7 +9,9 @@ use ruff_macros::CacheKey;
 pub struct TuffCustomOptions {
     pub alignment: AlignmentOptions,
     pub collections: CollectionOptions,
-    pub blank_lines: BlankLineOptions,
+    pub arguments: ArgumentOptions,
+    pub imports: ImportOptions,
+    pub blank_lines: tuff_lint::builtin::spacing::SpacingPolicy,
     pub spacing: SpacingOptions,
     pub commas: CommaOptions,
     pub one_line_suites: OneLineSuiteOptions,
@@ -20,6 +22,8 @@ impl TuffCustomOptions {
     pub const fn is_default_disabled(&self) -> bool {
         self.alignment.is_disabled()
             && self.collections.is_ruff_default()
+            && self.arguments.is_disabled()
+            && self.imports.is_disabled()
             && self.blank_lines.is_disabled()
             && self.spacing.is_disabled()
             && self.commas.is_disabled()
@@ -168,6 +172,7 @@ pub struct OneLineSuiteOptions {
     pub mode: FeatureMode,
     pub clauses: Vec<OneLineSuiteClause>,
     pub statements: Vec<OneLineSuiteStatement>,
+    pub docstrings: FeatureMode,
 }
 
 impl OneLineSuiteOptions {
@@ -182,6 +187,7 @@ impl Default for OneLineSuiteOptions {
             mode: FeatureMode::Disabled,
             clauses: vec![OneLineSuiteClause::If],
             statements: vec![OneLineSuiteStatement::Return, OneLineSuiteStatement::Call],
+            docstrings: FeatureMode::Disabled,
         }
     }
 }
@@ -203,6 +209,8 @@ pub enum OneLineSuiteClause {
     Except,
     Finally,
     MatchCase,
+    Function,
+    Class,
 }
 
 #[derive(CacheKey, Clone, Copy, Debug, Eq, PartialEq)]
@@ -309,11 +317,15 @@ pub enum CollectionLayout {
 )]
 pub struct CollectionPolicy {
     pub layout: CollectionLayout,
+    pub ignore_magic_trailing_comma: bool,
+    pub compact_nested: bool,
 }
 
 impl CollectionPolicy {
     pub const fn is_ruff_default(&self) -> bool {
         matches!(self.layout, CollectionLayout::RuffDefault)
+            && !self.ignore_magic_trailing_comma
+            && !self.compact_nested
     }
 }
 
@@ -321,6 +333,8 @@ impl Default for CollectionPolicy {
     fn default() -> Self {
         Self {
             layout: CollectionLayout::RuffDefault,
+            ignore_magic_trailing_comma: false,
+            compact_nested: false,
         }
     }
 }
@@ -351,13 +365,33 @@ impl CollectionOptions {
 #[cfg_attr(
     feature = "serde",
     derive(serde::Serialize, serde::Deserialize),
-    serde(default, deny_unknown_fields)
+    serde(default, deny_unknown_fields, rename_all = "kebab-case")
 )]
-pub struct BlankLineOptions {
-    pub mode: FeatureMode,
+pub struct ArgumentOptions {
+    pub calls: FeatureMode,
+    pub parameters: FeatureMode,
+    pub mixed: FeatureMode,
+    pub ignore_magic_trailing_comma: bool,
 }
 
-impl BlankLineOptions {
+impl ArgumentOptions {
+    pub const fn is_disabled(&self) -> bool {
+        self.calls.is_disabled() && self.parameters.is_disabled() && self.mixed.is_disabled()
+    }
+}
+
+#[derive(CacheKey, Clone, Debug, Default, Eq, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default, deny_unknown_fields, rename_all = "kebab-case")
+)]
+pub struct ImportOptions {
+    pub mode: FeatureMode,
+    pub ignore_magic_trailing_comma: bool,
+}
+
+impl ImportOptions {
     pub const fn is_disabled(&self) -> bool {
         self.mode.is_disabled()
     }

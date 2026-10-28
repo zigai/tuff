@@ -11,7 +11,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::comments::{SourceComment, leading_alternate_branch_comments, trailing_comments};
 use crate::custom::hooks::{self, OneLineSuiteClause, OneLineSuiteDecision};
-use crate::statement::suite::{SuiteKind, as_only_an_ellipsis};
+use crate::statement::suite::{DocstringStmt, SuiteKind, as_only_an_ellipsis};
 use crate::verbatim::{verbatim_text, write_suppressed_clause_header};
 use crate::{has_skip_comment, prelude::*};
 
@@ -456,19 +456,26 @@ impl<'ast> Format<PyFormatContext<'ast>> for FormatClauseHeader<'_, 'ast> {
         if has_skip_comment(self.trailing_colon_comment, f.context().source()) {
             write_suppressed_clause_header(self.header, f)?;
         } else {
-            // Write a source map entry for the colon for range formatting to support formatting the clause header without
-            // the clause body. Avoid computing `self.header.range()` otherwise because it's somewhat involved.
-            let clause_end = if f.options().source_map_generation().is_enabled() {
-                Some(source_position(
-                    self.header.range(f.context().source())?.end(),
-                ))
+            // Clause boundaries support range formatting and rendered layout measurements.
+            // Avoid computing the header range when source maps are disabled.
+            let (clause_start, clause_end) = if f.options().source_map_generation().is_enabled() {
+                let range = self.header.range(f.context().source())?;
+                (
+                    Some(source_position(range.start())),
+                    Some(source_position(range.end())),
+                )
             } else {
-                None
+                (None, None)
             };
 
             write!(
                 f,
-                [Arguments::from(&self.formatter), token(":"), clause_end]
+                [
+                    clause_start,
+                    Arguments::from(&self.formatter),
+                    token(":"),
+                    clause_end
+                ]
             )?;
         }
 
@@ -597,28 +604,60 @@ impl<'ast> Format<PyFormatContext<'ast>> for FormatClause<'_, 'ast> {
                         self.body,
                         !self.trailing_colon_comment.is_empty(),
                     ) == OneLineSuiteDecision::PreferOneLine
-                }) && one_line_suite_source_fits(self.header, self.body, f)?
+                }) && (matches!(
+                    self.header,
+                    ClauseHeader::Class(_) | ClauseHeader::Function(_)
+                ) || one_line_suite_source_fits(self.header, self.body, f)?)
                 {
                     let Some(statement) = self.body.first() else {
                         return write!(f, [self.clause_header(), self.clause_body()]);
                     };
+                    let header = self.clause_header().memoized();
+                    // Comments and magic trailing commas can require a multiline header
+                    // even when the combined source width is below the line limit.
+                    if matches!(
+                        self.header,
+                        ClauseHeader::Class(_) | ClauseHeader::Function(_)
+                    ) && header.inspect(f)?.will_break()
+                    {
+                        return write!(f, [header, self.clause_body()]);
+                    }
                     let one_line = format_with(|f| {
-                        write!(
-                            f,
-                            [
-                                self.clause_header(),
-                                space(),
-                                statement.format(),
-                                hard_line_break()
-                            ]
-                        )
-                    });
-                    let block =
-                        format_with(|f| write!(f, [self.clause_header(), self.clause_body()]));
+                        write!(f, [header, space(), statement.format(), hard_line_break()])
+                    })
+                    .memoized();
+                    let block = format_with(|f| write!(f, [header, self.clause_body()]));
 
-                    best_fitting![one_line, block]
-                        .with_mode(BestFittingMode::AllLines)
-                        .fmt(f)
+                    if matches!(
+                        self.header,
+                        ClauseHeader::Class(_) | ClauseHeader::Function(_)
+                    ) {
+                        let content = one_line.inspect(f)?;
+                        if hooks::one_line_definition_fits(f, content)? {
+                            return one_line.fmt(f);
+                        }
+
+                        // Preserve fitting string values, but also try the docstring
+                        // normalization that the block fallback would otherwise perform.
+                        if let Some(docstring) =
+                            DocstringStmt::try_from_statement(statement, self.kind, f.context())
+                        {
+                            let normalized = format_with(|f| {
+                                write!(f, [header, space(), docstring, hard_line_break()])
+                            })
+                            .memoized();
+                            let content = normalized.inspect(f)?;
+                            if hooks::one_line_definition_fits(f, content)? {
+                                return normalized.fmt(f);
+                            }
+                        }
+
+                        block.fmt(f)
+                    } else {
+                        best_fitting![one_line, block]
+                            .with_mode(BestFittingMode::AllLines)
+                            .fmt(f)
+                    }
                 } else {
                     write!(f, [self.clause_header(), self.clause_body()])
                 }
@@ -685,7 +724,9 @@ fn one_line_suite_clause(value: ClauseHeader<'_>) -> Option<OneLineSuiteClause> 
         ClauseHeader::ExceptHandler(_) => Some(OneLineSuiteClause::Except),
         ClauseHeader::TryFinally(_) => Some(OneLineSuiteClause::Finally),
         ClauseHeader::MatchCase(_) => Some(OneLineSuiteClause::MatchCase),
-        ClauseHeader::Class(_) | ClauseHeader::Function(_) | ClauseHeader::Match(_) => None,
+        ClauseHeader::Class(_) => Some(OneLineSuiteClause::Class),
+        ClauseHeader::Function(_) => Some(OneLineSuiteClause::Function),
+        ClauseHeader::Match(_) => None,
     }
 }
 

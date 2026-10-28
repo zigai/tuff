@@ -168,6 +168,18 @@ impl FormatContext for PyFormatContext<'_> {
     }
 }
 
+impl FormatContext for &PyFormatContext<'_> {
+    type Options = PyFormatOptions;
+
+    fn options(&self) -> &Self::Options {
+        &self.options
+    }
+
+    fn source_code(&self) -> SourceCode<'_> {
+        SourceCode::new(self.contents)
+    }
+}
+
 impl Debug for PyFormatContext<'_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PyFormatContext")

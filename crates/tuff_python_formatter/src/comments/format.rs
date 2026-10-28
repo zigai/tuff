@@ -10,7 +10,7 @@ use ruff_text_size::{Ranged, TextLen, TextRange};
 
 use crate::comments::SourceComment;
 use crate::context::NodeLevel;
-use crate::custom::hooks;
+use crate::custom::{blank_lines, hooks};
 use crate::prelude::*;
 use crate::statement::suite::should_insert_blank_line_after_class_in_stub_file;
 
@@ -41,10 +41,12 @@ impl Format<PyFormatContext<'_>> for FormatLeadingComments<'_> {
         ) -> FormatResult<()> {
             for comment in comments.iter().filter(|comment| comment.is_unformatted()) {
                 let lines_after_comment = lines_after(comment.end(), f.context().source());
-                write!(
-                    f,
-                    [format_comment(comment), empty_lines(lines_after_comment)]
-                )?;
+                format_comment(comment).fmt(f)?;
+                if let Some(blanks) = blank_lines::after_comment(comment.end(), f) {
+                    blank_lines::separator(blanks, f)?;
+                } else {
+                    empty_lines(lines_after_comment).fmt(f)?;
+                }
 
                 comment.mark_formatted();
             }
@@ -87,20 +89,27 @@ pub(crate) struct FormatLeadingAlternateBranchComments<'a> {
 
 impl Format<PyFormatContext<'_>> for FormatLeadingAlternateBranchComments<'_> {
     fn fmt(&self, f: &mut PyFormatter) -> FormatResult<()> {
-        if self.last_node.is_some_and(|preceding| {
+        if self.comments.is_empty()
+            && let Some(blanks) = self.last_node.and_then(|last| {
+                f.context()
+                    .custom_layout()
+                    .blank_lines
+                    .trailing(last.start())
+            })
+        {
+            blank_lines::separator(blanks, f)?;
+        } else if self.last_node.is_some_and(|preceding| {
             should_insert_blank_line_after_class_in_stub_file(preceding, None, f.context())
         }) {
             write!(f, [empty_line(), leading_comments(self.comments)])?;
         } else if let Some(first_leading) = self.comments.first() {
             // Leading comments only preserves the lines after the comment but not before.
             // Insert the necessary lines.
-            write!(
-                f,
-                [empty_lines(lines_before(
-                    first_leading.start(),
-                    f.context().source()
-                ))]
-            )?;
+            if let Some(blanks) = blank_lines::before_comment(first_leading.start(), f) {
+                blank_lines::separator(blanks, f)?;
+            } else {
+                empty_lines(lines_before(first_leading.start(), f.context().source())).fmt(f)?;
+            }
 
             write!(f, [leading_comments(self.comments)])?;
         } else if let Some(last_preceding) = self.last_node {
@@ -151,7 +160,11 @@ impl Format<PyFormatContext<'_>> for FormatTrailingComments<'_> {
             has_trailing_own_line_comment |= trailing.line_position().is_own_line();
 
             if has_trailing_own_line_comment {
-                let lines_before_comment = lines_before(trailing.start(), f.context().source());
+                let lines_before_comment = blank_lines::before_comment(trailing.start(), f)
+                    .map_or_else(
+                        || lines_before(trailing.start(), f.context().source()),
+                        |blanks| u32::try_from(blanks).unwrap_or(u32::MAX).saturating_add(1),
+                    );
 
                 // A trailing comment at the end of a body or list
                 // ```python

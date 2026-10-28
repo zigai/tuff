@@ -1,4 +1,5 @@
 use std::fmt;
+use std::hash::Hash;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -78,6 +79,26 @@ pub struct PyFormatOptions {
     custom: TuffCustomOptions,
 }
 
+impl ruff_cache::CacheKey for PyFormatOptions {
+    fn cache_key(&self, state: &mut ruff_cache::CacheKeyHasher) {
+        std::mem::discriminant(&self.source_type).hash(state);
+        self.target_version.major.cache_key(state);
+        self.target_version.minor.cache_key(state);
+        self.indent_style.cache_key(state);
+        self.line_width.cache_key(state);
+        self.indent_width.cache_key(state);
+        std::mem::discriminant(&self.line_ending).hash(state);
+        self.quote_style.cache_key(state);
+        self.magic_trailing_comma.cache_key(state);
+        std::mem::discriminant(&self.source_map_generation).hash(state);
+        self.docstring_code.cache_key(state);
+        self.docstring_code_line_width.cache_key(state);
+        self.preview.cache_key(state);
+        self.nested_string_quote_style.cache_key(state);
+        self.custom.cache_key(state);
+    }
+}
+
 fn default_line_width() -> LineWidth {
     LineWidth::try_from(88).unwrap()
 }
@@ -138,6 +159,11 @@ impl PyFormatOptions {
 
     pub const fn source_type(&self) -> PySourceType {
         self.source_type
+    }
+
+    pub fn with_source_type(mut self, source_type: PySourceType) -> Self {
+        self.source_type = source_type;
+        self
     }
 
     pub(crate) const fn source_map_generation(&self) -> SourceMapGeneration {

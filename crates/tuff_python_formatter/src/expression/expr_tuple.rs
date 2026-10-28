@@ -4,6 +4,7 @@ use ruff_python_ast::ExprTuple;
 use ruff_text_size::{Ranged, TextRange};
 
 use crate::builders::parenthesize_if_expands;
+use crate::custom::collections::{self, Element};
 use crate::custom::hooks::{self, CollectionDecision, CollectionSubject};
 use crate::expression::parentheses::{
     NeedsParentheses, OptionalParentheses, empty_parenthesized, optional_parentheses, parenthesized,
@@ -138,7 +139,7 @@ impl FormatNodeRule<ExprTuple> for FormatExprTuple {
             [] => empty_parenthesized("(", dangling, ")").fmt(f),
             [single] => match self.parentheses {
                 TupleParentheses::Preserve if !is_parenthesized => {
-                    single.format().fmt(f)?;
+                    collections::expression(f, single, CollectionSubject::Tuple)?;
                     // The `TupleParentheses::Preserve` is only set by subscript expression
                     // formatting. With PEP 646, a single element starred expression in the slice
                     // position of a subscript expression is actually a tuple expression. For
@@ -163,9 +164,20 @@ impl FormatNodeRule<ExprTuple> for FormatExprTuple {
                 _ =>
                 // A single element tuple always needs parentheses and a trailing comma, except when inside of a subscript
                 {
-                    parenthesized("(", &format_args![single.format(), token(",")], ")")
-                        .with_dangling_comments(dangling)
-                        .fmt(f)
+                    parenthesized(
+                        "(",
+                        &format_args![
+                            format_with(|f| collections::expression(
+                                f,
+                                single,
+                                CollectionSubject::Tuple
+                            )),
+                            token(",")
+                        ],
+                        ")",
+                    )
+                    .with_dangling_comments(dangling)
+                    .fmt(f)
                 }
             },
             _ if should_force_expand_tuple(item, self.parentheses, *is_parenthesized, f) => {
@@ -179,23 +191,23 @@ impl FormatNodeRule<ExprTuple> for FormatExprTuple {
                 )
             }
             _ if should_fill_tuple(item, self.parentheses, *is_parenthesized, f) => {
-                write!(
+                let layout = tuple_collection_layout(item, f);
+                let optional = matches!(
+                    layout,
+                    CollectionDecision::PreferCompact | CollectionDecision::CompactExpanded
+                ) && (!*is_parenthesized
+                    || self.parentheses == TupleParentheses::NeverPreserve);
+                collections::packed(
                     f,
-                    [
-                        token("("),
-                        block_indent(&format_with(|f| {
-                            let mut fill = f.fill();
-                            for element in &item.elts {
-                                fill.entry(
-                                    &format_args![token(","), soft_line_break_or_space()],
-                                    &CollectionElement(element),
-                                );
-                            }
-                            fill.finish()?;
-                            token(",").fmt(f)
-                        })),
-                        token(")")
-                    ]
+                    "(",
+                    ")",
+                    elts.iter()
+                        .map(|element| Element(element, CollectionSubject::Tuple)),
+                    matches!(
+                        layout,
+                        CollectionDecision::Fill | CollectionDecision::CompactExpanded
+                    ),
+                    optional,
                 )
             }
             // If the tuple has parentheses, we generally want to keep them. The exception are for
@@ -249,16 +261,7 @@ fn should_force_expand_tuple(
         return false;
     }
 
-    matches!(
-        hooks::collection_layout(
-            f,
-            CollectionSubject::Tuple,
-            item.elts.len(),
-            !f.context().comments().dangling(item).is_empty(),
-            has_trailing_comma(item.range(), f.context()),
-        ),
-        CollectionDecision::ForceExpanded
-    )
+    tuple_collection_layout(item, f) == CollectionDecision::ForceExpanded
 }
 
 fn should_fill_tuple(
@@ -267,28 +270,43 @@ fn should_fill_tuple(
     is_parenthesized: bool,
     f: &PyFormatter,
 ) -> bool {
-    if !f.context().source()[item.range()].contains('\n') {
-        return false;
-    }
-
+    let layout = tuple_collection_layout(item, f);
+    // For-loop targets may acquire parentheses when they overflow. Pack them on
+    // the first pass too, but leave the existing Fill and subscript/comprehension
+    // rules unchanged.
+    let compact_for_target = parentheses == TupleParentheses::NeverPreserve
+        && matches!(
+            layout,
+            CollectionDecision::PreferCompact | CollectionDecision::CompactExpanded
+        );
     if !is_parenthesized
         && !matches!(
             parentheses,
             TupleParentheses::Default | TupleParentheses::OptionalParentheses
         )
+        && !compact_for_target
     {
         return false;
     }
 
-    matches!(
-        hooks::collection_layout(
+    match layout {
+        CollectionDecision::PreferCompact | CollectionDecision::CompactExpanded => true,
+        CollectionDecision::Fill => f.context().source()[item.range()].contains('\n'),
+        _ => false,
+    }
+}
+
+fn tuple_collection_layout(item: &ExprTuple, f: &PyFormatter) -> CollectionDecision {
+    hooks::collection_layout(
+        f,
+        CollectionSubject::Tuple,
+        item.elts.len(),
+        collections::has_comments(f, item.range()),
+        collections::magic_comma(
             f,
-            CollectionSubject::Tuple,
-            item.elts.len(),
-            !f.context().comments().dangling(item).is_empty(),
-            has_trailing_comma(item.range(), f.context()),
+            item.elts.last().map_or(item.end(), Ranged::end),
+            item.end(),
         ),
-        CollectionDecision::Fill
     )
 }
 
@@ -305,23 +323,20 @@ impl<'a> ExprSequence<'a> {
 
 impl Format<PyFormatContext<'_>> for ExprSequence<'_> {
     fn fmt(&self, f: &mut PyFormatter) -> FormatResult<()> {
-        f.join_comma_separated(self.tuple.end())
+        let end = collections::sequence_end(
+            f,
+            CollectionSubject::Tuple,
+            self.tuple.elts.last().map_or(self.tuple.end(), Ranged::end),
+            self.tuple.end(),
+        );
+        f.join_comma_separated(end)
             .entries(
                 self.tuple
                     .elts
                     .iter()
-                    .map(|element| (element, CollectionElement(element))),
+                    .map(|element| (element, Element(element, CollectionSubject::Tuple))),
             )
             .finish()
-    }
-}
-
-struct CollectionElement<'a>(&'a ruff_python_ast::Expr);
-
-impl Format<PyFormatContext<'_>> for CollectionElement<'_> {
-    fn fmt(&self, f: &mut PyFormatter) -> FormatResult<()> {
-        hooks::before_collection_element(f, self.0)?;
-        self.0.format().fmt(f)
     }
 }
 

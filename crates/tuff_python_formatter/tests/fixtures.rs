@@ -7,9 +7,9 @@ use ruff_db::diagnostic::{
     DisplayDiagnostics, DummyFileResolver, Severity, Span, SubDiagnostic, SubDiagnosticSeverity,
 };
 use ruff_formatter::FormatOptions;
-use ruff_python_ast::Mod;
 use ruff_python_ast::comparable::ComparableMod;
 use ruff_python_ast::visitor::source_order::SourceOrderVisitor;
+use ruff_python_ast::{Mod, PythonVersion};
 use ruff_python_parser::{ParseOptions, Parsed, UnsupportedSyntaxError, parse};
 use ruff_source_file::{LineIndex, OneIndexed, SourceFileBuilder};
 use ruff_text_size::{Ranged, TextRange, TextSize};
@@ -23,7 +23,10 @@ use std::io::BufReader;
 use std::ops::Range;
 use std::path::Path;
 use std::{fmt, fs};
-use tuff_python_formatter::{PreviewMode, PyFormatOptions, format_module_source, format_range};
+use tuff_python_formatter::{
+    CollectionLayout, FeatureMode, OneLineSuiteClause, OneLineSuiteStatement, PreviewMode,
+    PyFormatOptions, TuffCustomOptions, format_module_source, format_range,
+};
 
 mod normalizer;
 
@@ -311,9 +314,66 @@ fn format(input_path: &Utf8Path, content: String) -> datatest_stable::Result<()>
     Ok(())
 }
 
+fn compact_layout(input_path: &Utf8Path) -> datatest_stable::Result<()> {
+    let source = fs::read_to_string(input_path)?
+        .replace("<RANGE_START>", "")
+        .replace("<RANGE_END>", "");
+    let options_path = input_path.with_extension("options.json");
+    let options: Vec<PyFormatOptions> = if options_path.is_file() {
+        serde_json::from_reader(BufReader::new(fs::File::open(options_path)?))?
+    } else {
+        vec![PyFormatOptions::from_extension(input_path.as_std_path())]
+    };
+    for options in options {
+        for ignore in [false, true] {
+            let mut custom = TuffCustomOptions::default();
+            for policy in [
+                &mut custom.collections.lists,
+                &mut custom.collections.dicts,
+                &mut custom.collections.tuples,
+                &mut custom.collections.sets,
+            ] {
+                policy.layout = CollectionLayout::PreferCompact;
+                policy.compact_nested = true;
+                policy.ignore_magic_trailing_comma = ignore;
+            }
+            custom.arguments.calls = FeatureMode::Enabled;
+            custom.arguments.parameters = FeatureMode::Enabled;
+            custom.arguments.mixed = FeatureMode::Enabled;
+            custom.arguments.ignore_magic_trailing_comma = ignore;
+            custom.imports.mode = FeatureMode::Enabled;
+            custom.imports.ignore_magic_trailing_comma = ignore;
+            custom.one_line_suites.mode = FeatureMode::Enabled;
+            custom.one_line_suites.clauses =
+                vec![OneLineSuiteClause::Function, OneLineSuiteClause::Class];
+            custom.one_line_suites.statements = vec![
+                OneLineSuiteStatement::Pass,
+                OneLineSuiteStatement::Ellipsis,
+                OneLineSuiteStatement::Return,
+                OneLineSuiteStatement::Call,
+                OneLineSuiteStatement::Raise,
+                OneLineSuiteStatement::Assert,
+                OneLineSuiteStatement::Expression,
+                OneLineSuiteStatement::Assignment,
+                OneLineSuiteStatement::AnnotatedAssignment,
+            ];
+            custom.one_line_suites.docstrings = FeatureMode::Enabled;
+            let options = options
+                .clone()
+                .with_target_version(PythonVersion::latest())
+                .with_custom(custom);
+            let formatted = format_module_source(&source, options.clone())?.into_code();
+            assert!(ensure_unchanged_ast(&source, &formatted, &options, input_path).is_empty());
+            ensure_stability_when_formatting_twice(&formatted, &options, input_path);
+        }
+    }
+    Ok(())
+}
+
 datatest_stable::harness! {
     { test = black_compatibility, root = "./resources/test/fixtures/black", pattern = r".+\.pyi?$" },
-    { test = format, root="./resources/test/fixtures/ruff", pattern = r".+\.pyi?$" }
+    { test = format, root="./resources/test/fixtures/ruff", pattern = r".+\.pyi?$" },
+    { test = compact_layout, root="./resources/test/fixtures/ruff", pattern = r".+\.pyi?$" }
 }
 
 fn format_file(

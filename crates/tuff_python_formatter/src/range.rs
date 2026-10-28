@@ -79,15 +79,8 @@ pub fn format_range(
     let source_code = SourceCode::new(source);
     let trivia = TriviaRanges::from(parsed.tokens());
     let comments = Comments::from_ast(parsed.syntax(), source_code, &trivia);
-    let mut custom_layout = custom::layout::build_layout_plan(
-        parsed.syntax().into(),
-        parsed.tokens(),
-        &comments,
-        source_code,
-        options.custom(),
-        usize::from(options.line_width().value()),
-    )
-    .map_err(|_| FormatError::syntax_error("failed to build tuff custom layout plan"))?;
+    let mut custom_layout =
+        crate::build_file_layout_plan(&parsed, &trivia, source, &comments, &options)?;
 
     let mut context = PyFormatContext::new(
         options.with_source_map_generation(SourceMapGeneration::Enabled),

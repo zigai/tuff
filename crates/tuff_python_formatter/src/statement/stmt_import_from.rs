@@ -50,6 +50,10 @@ impl FormatNodeRule<StmtImportFrom> for FormatStmtImportFrom {
             }
         }
 
+        if crate::custom::packing::imports(item, f)? {
+            return Ok(());
+        }
+
         let names = format_with(|f| {
             f.join_comma_separated(item.end())
                 .with_trailing_comma(TrailingComma::OneOrMore)

@@ -1,8 +1,9 @@
-use ruff_formatter::{format_args, write};
+use ruff_formatter::write;
 use ruff_python_ast::AnyNodeRef;
 use ruff_python_ast::ExprSet;
 use ruff_text_size::Ranged;
 
+use crate::custom::collections::{self, Element};
 use crate::custom::hooks::{self, CollectionDecision, CollectionSubject};
 use crate::expression::parentheses::{NeedsParentheses, OptionalParentheses, parenthesized};
 use crate::prelude::*;
@@ -21,10 +22,16 @@ impl FormatNodeRule<ExprSet> for FormatExprSet {
         assert!(!elts.is_empty());
         // Avoid second mutable borrow of f
         let joined = format_with(|f: &mut PyFormatter| {
-            f.join_comma_separated(item.end())
+            let end = collections::sequence_end(
+                f,
+                CollectionSubject::Set,
+                elts.last().map_or(item.end(), Ranged::end),
+                item.end(),
+            );
+            f.join_comma_separated(end)
                 .entries(
                     elts.iter()
-                        .map(|element| (element, CollectionElement(element))),
+                        .map(|element| (element, Element(element, CollectionSubject::Set))),
                 )
                 .finish()
         });
@@ -36,8 +43,8 @@ impl FormatNodeRule<ExprSet> for FormatExprSet {
             f,
             CollectionSubject::Set,
             elts.len(),
-            !dangling.is_empty(),
-            false,
+            collections::has_comments(f, item.range()),
+            collections::magic_comma(f, elts.last().map_or(item.end(), Ranged::end), item.end()),
         );
         let source_is_multiline = f.context().source()[item.range()].contains('\n');
 
@@ -45,40 +52,36 @@ impl FormatNodeRule<ExprSet> for FormatExprSet {
             CollectionDecision::ForceExpanded => {
                 write!(f, [token("{"), block_indent(&joined), token("}")])
             }
-            CollectionDecision::Fill if source_is_multiline => write!(
+            CollectionDecision::PreferCompact => collections::packed(
                 f,
-                [
-                    token("{"),
-                    block_indent(&format_with(|f| {
-                        let mut fill = f.fill();
-                        for element in elts {
-                            fill.entry(
-                                &format_args![token(","), soft_line_break_or_space()],
-                                &CollectionElement(element),
-                            );
-                        }
-                        fill.finish()?;
-                        token(",").fmt(f)
-                    })),
-                    token("}")
-                ]
+                "{",
+                "}",
+                elts.iter()
+                    .map(|element| Element(element, CollectionSubject::Set)),
+                false,
+                false,
             ),
+            CollectionDecision::CompactExpanded | CollectionDecision::Fill
+                if source_is_multiline
+                    || collection_layout == CollectionDecision::CompactExpanded =>
+            {
+                collections::packed(
+                    f,
+                    "{",
+                    "}",
+                    elts.iter()
+                        .map(|element| Element(element, CollectionSubject::Set)),
+                    true,
+                    false,
+                )
+            }
             CollectionDecision::UseRuffDefault
-            | CollectionDecision::PreferFlat
             | CollectionDecision::Fill
+            | CollectionDecision::CompactExpanded
             | CollectionDecision::PreserveInput => parenthesized("{", &joined, "}")
                 .with_dangling_comments(dangling)
                 .fmt(f),
         }
-    }
-}
-
-struct CollectionElement<'a>(&'a ruff_python_ast::Expr);
-
-impl Format<PyFormatContext<'_>> for CollectionElement<'_> {
-    fn fmt(&self, f: &mut PyFormatter) -> FormatResult<()> {
-        hooks::before_collection_element(f, self.0)?;
-        self.0.format().fmt(f)
     }
 }
 
