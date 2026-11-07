@@ -4,7 +4,10 @@ use std::{
     process::Command,
 };
 
-fn main() {
+mod tuff_build;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tuff_build::identity()?;
     // The workspace root directory is not available without walking up the tree
     // https://github.com/rust-lang/cargo/issues/3946
     let workspace_root = Path::new(&std::env::var("CARGO_MANIFEST_DIR").unwrap())
@@ -15,6 +18,7 @@ fn main() {
 
     let target = std::env::var("TARGET").unwrap();
     println!("cargo::rustc-env=RUST_HOST_TARGET={target}");
+    Ok(())
 }
 
 fn commit_info(workspace_root: &Path) {

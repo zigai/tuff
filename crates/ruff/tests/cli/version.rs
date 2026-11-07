@@ -100,10 +100,7 @@ impl VersionTest {
     fn new() -> anyhow::Result<Self> {
         Ok(Self {
             cli_test: CliTest::with_settings(|_, mut settings| {
-                settings.add_filter(
-                    r"\d+\.\d+\.\d+(\+\d+)?( \(\w{9} \d\d\d\d-\d\d-\d\d\))?",
-                    "[VERSION]",
-                );
+                settings.add_filter(r"(?m)^tuff .+$", "tuff [VERSION]");
                 settings
             })?,
         })

@@ -33,6 +33,7 @@ mod printer;
 pub mod resolve;
 mod stdin;
 mod tuff;
+mod tuff_version;
 mod version;
 
 #[derive(Copy, Clone)]

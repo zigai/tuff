@@ -119,7 +119,7 @@ const STYLES: Styles = Styles::styled()
     about = "Tuff: an extremely fast Python linter and code formatter.",
     after_help = "For help with a specific command, see: `tuff help <command>`."
 )]
-#[command(version)]
+#[command(version = crate::tuff_version::VERSION)]
 #[command(styles = STYLES)]
 pub struct Args {
     #[command(subcommand)]
