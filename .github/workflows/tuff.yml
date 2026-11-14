@@ -3,16 +3,7 @@ name: Tuff
 on:
   pull_request:
     paths:
-      - "crates/ruff/Cargo.toml"
-      - "crates/ruff/src/args.rs"
-      - "crates/ruff/src/commands/format.rs"
-      - "crates/ruff/src/commands/version.rs"
-      - "crates/ruff/src/lib.rs"
-      - "crates/ruff/src/main.rs"
-      - "crates/ruff/src/tuff.rs"
-      - "crates/ruff/src/tuff/**"
-      - "crates/ruff/tests/tuff_cli.rs"
-      - "crates/tuff_python_formatter/**"
+      - "crates/**"
       - "docs/**"
       - "UPSTREAM_PATCHES.md"
       - "Cargo.toml"
@@ -21,16 +12,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "crates/ruff/Cargo.toml"
-      - "crates/ruff/src/args.rs"
-      - "crates/ruff/src/commands/format.rs"
-      - "crates/ruff/src/commands/version.rs"
-      - "crates/ruff/src/lib.rs"
-      - "crates/ruff/src/main.rs"
-      - "crates/ruff/src/tuff.rs"
-      - "crates/ruff/src/tuff/**"
-      - "crates/ruff/tests/tuff_cli.rs"
-      - "crates/tuff_python_formatter/**"
+      - "crates/**"
       - "docs/**"
       - "UPSTREAM_PATCHES.md"
       - "Cargo.toml"
