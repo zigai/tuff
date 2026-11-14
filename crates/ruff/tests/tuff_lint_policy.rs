@@ -291,7 +291,7 @@ fn unsafe_tempfile_aliases_shadowing_and_exclusions() {
             .unwrap();
         assert_eq!(
             output.status.code(),
-            Some(if expected == 0 { 0 } else { 1 }),
+            Some(i32::from(expected != 0)),
             "{options}: {}",
             String::from_utf8_lossy(&output.stderr)
         );

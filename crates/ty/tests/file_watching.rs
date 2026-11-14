@@ -443,6 +443,7 @@ impl<'a> SetupContext<'a> {
 
     /// Controls whether setup starts watching. Defaults to true.
     /// When false, call [`TestCase::start_watching`] after preparing the filesystem.
+    #[cfg(feature = "test-uv")]
     fn set_watch(&mut self, watch: bool) {
         self.watch = watch;
     }

@@ -98,7 +98,7 @@ fn upstream_comment_ignores_stay_with_the_target_comment() {
             .unwrap();
         assert_eq!(
             output.status.code(),
-            Some(if expected == 0 { 0 } else { 1 }),
+            Some(i32::from(expected != 0)),
             "{source}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
