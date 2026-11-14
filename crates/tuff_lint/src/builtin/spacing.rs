@@ -208,12 +208,12 @@ impl SpacingOptions {
         match rule {
             SpacingRule::AfterControlBlock => self.after_control_block = parse_options(input)?,
             SpacingRule::AfterTerminalControlBlock => {
-                self.after_terminal_control_block = parse_options(input)?
+                self.after_terminal_control_block = parse_options(input)?;
             }
             SpacingRule::BeforeAssignment => self.before_assignment = parse_options(input)?,
             SpacingRule::BeforeBranch => self.before_branch = parse_options(input)?,
             SpacingRule::BeforeUnrelatedBlock => {
-                self.before_unrelated_block = parse_options(input)?
+                self.before_unrelated_block = parse_options(input)?;
             }
             SpacingRule::MatchCaseSeparation => self.match_case_separation = parse_options(input)?,
             SpacingRule::BlockHeaderCuddleStrict

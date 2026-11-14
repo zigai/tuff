@@ -79,14 +79,13 @@ impl Planner<'_> {
             let statement = &body[index];
             if self
                 .src
-                .layout_same_line(previous.end(), self.src.first_offset(statement))
+                .layout_same_line(previous.end(), Source::first_offset(statement))
             {
                 continue;
             }
             if self.enabled(SpacingRule::AfterControlBlock) && self.after_control(body, index - 1) {
                 self.between(
-                    previous,
-                    statement,
+                    (previous, statement),
                     anchor,
                     SpacingRule::AfterControlBlock,
                     1,
@@ -98,8 +97,7 @@ impl Planner<'_> {
                 && self.after_terminal(body, index - 1)
             {
                 self.between(
-                    previous,
-                    statement,
+                    (previous, statement),
                     anchor,
                     SpacingRule::AfterTerminalControlBlock,
                     1,
@@ -137,7 +135,7 @@ impl Planner<'_> {
                         rule == SpacingRule::BlockHeaderCuddleStrict,
                     )
                 {
-                    self.between(previous, statement, anchor, rule, 1, if rule == SpacingRule::BeforeUnrelatedBlock { "Add a blank line before this block; the preceding statements do not prepare values used by it." } else { "Add a blank line before this block; only an immediately preceding assignment used by the block may remain attached." }, true);
+                    self.between((previous, statement), anchor, rule, 1, if rule == SpacingRule::BeforeUnrelatedBlock { "Add a blank line before this block; the preceding statements do not prepare values used by it." } else { "Add a blank line before this block; only an immediately preceding assignment used by the block may remain attached." }, true);
                 }
             }
         }
@@ -148,7 +146,7 @@ impl Planner<'_> {
     fn descend(&mut self, statement: &Stmt, scope: ScopeKind) {
         match statement {
             Stmt::FunctionDef(s) => {
-                self.suite(&s.body, Parent::Function, s.start(), ScopeKind::Function)
+                self.suite(&s.body, Parent::Function, s.start(), ScopeKind::Function);
             }
             Stmt::ClassDef(s) => self.suite(&s.body, Parent::Class, s.start(), ScopeKind::Class),
             Stmt::If(s) => {
@@ -201,8 +199,7 @@ impl Planner<'_> {
                             > self.options.match_case_separation.max_case_non_empty_lines
                         {
                             self.gap(
-                                self.src.text.full_line_end(a.end()),
-                                b.start(),
+                                (self.src.text.full_line_end(a.end()), b.start()),
                                 GapAnchor {
                                     kind: GapKind::BetweenCases,
                                     suite: s.start(),
@@ -251,8 +248,7 @@ impl Planner<'_> {
     }
     fn between(
         &mut self,
-        a: &Stmt,
-        b: &Stmt,
+        (a, b): (&Stmt, &Stmt),
         suite: TextSize,
         rule: SpacingRule,
         blanks: usize,
@@ -260,7 +256,7 @@ impl Planner<'_> {
         keyword: bool,
     ) {
         let diagnostic = self.anchor_range(b, keyword);
-        if self.src.same_line(a.end(), self.src.first_offset(b)) {
+        if self.src.same_line(a.end(), Source::first_offset(b)) {
             self.decisions.push(GapDecision {
                 anchor: GapAnchor {
                     kind: GapKind::BetweenStatements,
@@ -279,8 +275,7 @@ impl Planner<'_> {
             return;
         }
         self.gap(
-            self.src.gap_start(a),
-            self.src.first_offset(b),
+            (self.src.gap_start(a), Source::first_offset(b)),
             GapAnchor {
                 kind: GapKind::BetweenStatements,
                 suite,
@@ -295,8 +290,7 @@ impl Planner<'_> {
     }
     fn gap(
         &mut self,
-        start: TextSize,
-        next_start: TextSize,
+        (start, next_start): (TextSize, TextSize),
         anchor: GapAnchor,
         rule: SpacingRule,
         blanks: usize,
@@ -336,7 +330,7 @@ impl Planner<'_> {
     }
     fn leading(&mut self, body: &[Stmt], parent: Parent, suite: TextSize) {
         let first = &body[0];
-        let first_start = self.src.text.line_start(self.src.first_offset(first));
+        let first_start = self.src.text.line_start(Source::first_offset(first));
         let start = self.src.header_end(suite, first_start);
         if start > first_start {
             return;
@@ -596,7 +590,7 @@ impl Planner<'_> {
         let compact =
             self.receiver_setup(body, index) || self.simple_return_tail(body, index, parent);
         if compact {
-            self.between(previous, statement, anchor, SpacingRule::BeforeAssignment, 0, "Unnecessary blank line before assignment statement that continues a compact local flow.", false);
+            self.between((previous, statement), anchor, SpacingRule::BeforeAssignment, 0, "Unnecessary blank line before assignment statement that continues a compact local flow.", false);
             return;
         }
         let related = related_use(&self.src, body, index, settings.related_use_lookahead);
@@ -618,7 +612,7 @@ impl Planner<'_> {
         {
             return;
         }
-        self.between(previous, statement, anchor, SpacingRule::BeforeAssignment, 1, "Missing blank line before assignment statement that follows a non-assignment statement.", false);
+        self.between((previous, statement), anchor, SpacingRule::BeforeAssignment, 1, "Missing blank line before assignment statement that follows a non-assignment statement.", false);
     }
     fn annotated_return(&self, body: &[Stmt], index: usize) -> bool {
         matches!((&body[index - 1], &body[index]), (Stmt::AnnAssign(a), Stmt::Return(r)) if a.value.is_some() && self.src.single(&body[index - 1]) && matches!((a.target.as_ref(), r.value.as_deref()), (Expr::Name(a), Some(Expr::Name(r))) if a.id == r.id))
@@ -628,7 +622,7 @@ impl Planner<'_> {
         let previous = &body[index - 1];
         let statement = &body[index];
         if settings.allow_related_return_tails && self.annotated_return(body, index) {
-            self.between(previous, statement, anchor, SpacingRule::BeforeBranch, 0, "Unnecessary blank line before returning an immediately preceding annotated binding.", true);
+            self.between((previous, statement), anchor, SpacingRule::BeforeBranch, 0, "Unnecessary blank line before returning an immediately preceding annotated binding.", true);
             return;
         }
         if control(previous)
@@ -668,8 +662,7 @@ impl Planner<'_> {
             }
         }
         self.between(
-            previous,
-            statement,
+            (previous, statement),
             anchor,
             SpacingRule::BeforeBranch,
             1,

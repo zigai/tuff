@@ -31,6 +31,7 @@ struct Selection {
 }
 
 impl LintOptions {
+    #[must_use]
     pub fn combine(mut self, parent: Self) -> Self {
         self.source = self.source.or(parent.source);
         let mut inherited = parent.inherited;
@@ -128,6 +129,7 @@ pub struct Options {
 }
 
 impl Options {
+    #[must_use]
     pub fn combine(mut self, parent: Self) -> Self {
         self.lint = self.lint.combine(parent.lint);
         self.format = match (self.format, parent.format) {

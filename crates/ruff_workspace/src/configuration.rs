@@ -365,7 +365,7 @@ impl Configuration {
 
             linter: LinterSettings {
                 rules,
-                tuff: tuff_lint::Settings::new(project_root.to_path_buf(), self.tuff.lint.rules)?,
+                tuff: tuff_lint::Settings::new(project_root.to_path_buf(), &self.tuff.lint.rules)?,
                 tuff_format: formatter.to_tuff_format_options(ast::PySourceType::Python, "", None),
                 exclude: FilePatternSet::try_from_iter(lint.exclude.unwrap_or_default())?,
                 extension: self.extension.unwrap_or_default(),

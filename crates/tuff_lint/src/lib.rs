@@ -85,6 +85,7 @@ impl Finding {
         }
     }
 
+    #[must_use]
     pub fn with_fix(mut self, fix: Fix, title: impl Into<String>) -> Self {
         self.fix = Some(fix);
         self.fix_title = Some(title.into());
@@ -144,16 +145,19 @@ pub struct RuleDefinition {
 }
 
 impl RuleDefinition {
+    #[must_use]
     pub const fn replacing(mut self, codes: &'static [&'static str]) -> Self {
         self.replaces = codes;
         self
     }
 
+    #[must_use]
     pub const fn since(mut self, version: PythonVersion) -> Self {
         self.versions.minimum = Some(version);
         self
     }
 
+    #[must_use]
     pub const fn before(mut self, version: PythonVersion) -> Self {
         self.versions.before = Some(version);
         self
@@ -395,15 +399,15 @@ impl Settings {
         }
     }
 
-    pub fn new(root: std::path::PathBuf, options: BTreeMap<String, RuleOptions>) -> Result<Self> {
+    pub fn new(root: std::path::PathBuf, options: &BTreeMap<String, RuleOptions>) -> Result<Self> {
         let definitions = builtin::definitions();
         for name in options.keys() {
             if !definitions.iter().any(|rule| rule.name == name) {
                 bail!("unknown Tuff rule `{name}`");
             }
         }
-        let fingerprint = toml::to_string(&options)?;
-        let registry = Arc::new(Registry::new(definitions, &options)?);
+        let fingerprint = toml::to_string(options)?;
+        let registry = Arc::new(Registry::new(definitions, options)?);
         Ok(Self {
             registry,
             root,

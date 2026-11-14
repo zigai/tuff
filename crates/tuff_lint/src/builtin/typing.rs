@@ -166,7 +166,7 @@ fn active_binding<'a>(c: &Context<'_, 'a, '_>, n: &ast::ExprName) -> Option<Bind
                     .iter()
                     .find(|binding| binding.range() == range)
             })
-            .and_then(|binding| binding.as_any_import())
+            .and_then(ruff_python_semantic::Binding::as_any_import)
         {
             Binding::Qualified(import.qualified_name().segments().join("."))
         } else {
@@ -321,6 +321,12 @@ fn object_atom(
     seen: &mut HashSet<TextRange>,
     quoted_at: Option<TextSize>,
 ) -> bool {
+    fn root(e: &Expr) -> &Expr {
+        match e {
+            Expr::Attribute(a) => root(&a.value),
+            _ => e,
+        }
+    }
     if let Some(at) = quoted_at {
         return match e {
             Expr::Name(name) => match lookup(c, name.id.as_str(), at) {
@@ -345,12 +351,6 @@ fn object_atom(
         if matches!(e, Expr::Name(n) if n.id == "object" && c.binding_range(n).is_none() && lookup(c, "object", n.start()).is_none())
         {
             return true;
-        }
-        fn root(e: &Expr) -> &Expr {
-            match e {
-                Expr::Attribute(a) => root(&a.value),
-                _ => e,
-            }
         }
         if dotted_name(e).as_deref() == Some("builtins.object") {
             let head = root(e);

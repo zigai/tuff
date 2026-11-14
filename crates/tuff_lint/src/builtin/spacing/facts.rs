@@ -104,15 +104,15 @@ impl<'a> Source<'a> {
         };
         let inline = !module && self.same_line(anchor, first.start());
         if !module && !inline {
-            let start = self.header_end(anchor, self.first_offset(first));
-            if start < self.text.line_start(self.first_offset(first)) {
+            let start = self.header_end(anchor, Self::first_offset(first));
+            if start < self.text.line_start(Self::first_offset(first)) {
                 self.first_leading.insert(first.start());
             }
         }
         for (index, statement) in body.iter().enumerate() {
             let next = body
                 .get(index + 1)
-                .map_or(limit, |s| self.text.line_start(self.first_offset(s)));
+                .map_or(limit, |s| self.text.line_start(Self::first_offset(s)));
             self.index_stmt(statement, next);
         }
         let Some(last) = body.last() else {
@@ -288,13 +288,13 @@ impl<'a> Source<'a> {
                 .count()
             })
     }
-    pub(super) fn body_range(&self, body: &[Stmt]) -> Option<TextRange> {
+    pub(super) fn body_range(body: &[Stmt]) -> Option<TextRange> {
         Some(TextRange::new(body.first()?.start(), body.last()?.end()))
     }
     pub(super) fn body_count(&self, body: &[Stmt]) -> usize {
-        self.body_range(body).map_or(0, |r| self.count(r))
+        Self::body_range(body).map_or(0, |r| self.count(r))
     }
-    pub(super) fn first_offset(&self, stmt: &Stmt) -> TextSize {
+    pub(super) fn first_offset(stmt: &Stmt) -> TextSize {
         let decorator = match stmt {
             Stmt::FunctionDef(s) => s.decorator_list.first(),
             Stmt::ClassDef(s) => s.decorator_list.first(),
@@ -303,7 +303,7 @@ impl<'a> Source<'a> {
         decorator.map_or(stmt.start(), Ranged::start)
     }
     pub(super) fn separator(&self, a: &Stmt, b: &Stmt) -> bool {
-        self.gap_start(a) < self.text.line_start(self.first_offset(b))
+        self.gap_start(a) < self.text.line_start(Self::first_offset(b))
     }
     pub(super) fn inline(&self, stmt: &Stmt) -> bool {
         primary(stmt)
@@ -651,8 +651,7 @@ pub(super) fn related_use(src: &Source<'_>, body: &[Stmt], index: usize, lookahe
     let assigned = assigned(&body[index]);
     !assigned.is_empty()
         && src.leading(&body[index + 1..], lookahead).iter().any(|s| {
-            !refs(s, false).is_disjoint(&assigned)
-                && !(src.branch(s) && direct_branch(s, &assigned))
+            !(refs(s, false).is_disjoint(&assigned) || src.branch(s) && direct_branch(s, &assigned))
         })
 }
 pub(super) fn early_consumed(src: &Source<'_>, stmt: &Stmt, limit: usize) -> Names {

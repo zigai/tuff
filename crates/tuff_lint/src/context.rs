@@ -60,7 +60,7 @@ impl<'ast, 'src> Context<'_, 'ast, 'src> {
                 && binding.name(self.source) == expression.id.as_str()
                 && function(binding.scope) == function(scope)
                 && matches!(semantic.scopes[binding.scope].kind, ScopeKind::Class(class) if class.end() < expression.start() && original.is_none_or(|range| range.end() < class.end()))
-        }).max_by_key(|binding| binding.start()).map(Ranged::range).or(original)
+        }).max_by_key(ruff_text_size::Ranged::start).map(Ranged::range).or(original)
     }
 
     pub fn scope_at(&self, offset: TextSize) -> Option<ScopeId> {
@@ -68,7 +68,7 @@ impl<'ast, 'src> Context<'_, 'ast, 'src> {
         if let Some(reference) = semantic
             .bindings
             .iter()
-            .flat_map(|binding| binding.references())
+            .flat_map(ruff_python_semantic::Binding::references)
             .map(|id| semantic.reference(id))
             .filter(|reference| reference.range().contains(offset))
             .min_by_key(|reference| reference.range().len())
@@ -84,7 +84,7 @@ impl<'ast, 'src> Context<'_, 'ast, 'src> {
                         let annotation = function
                             .parameters
                             .iter()
-                            .filter_map(|parameter| parameter.annotation())
+                            .filter_map(ruff_python_ast::AnyParameterRef::annotation)
                             .chain(function.returns.as_deref())
                             .find(|annotation| annotation.range().contains(offset));
                         if let Some(annotation) = annotation {

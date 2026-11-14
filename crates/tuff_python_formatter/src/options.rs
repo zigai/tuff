@@ -161,6 +161,7 @@ impl PyFormatOptions {
         self.source_type
     }
 
+    #[must_use]
     pub fn with_source_type(mut self, source_type: PySourceType) -> Self {
         self.source_type = source_type;
         self

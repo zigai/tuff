@@ -46,9 +46,6 @@ fn all_statement(stmt: &Stmt) -> bool {
 }
 impl LintRule for AllBottom {
     fn check(&self, node: AnyNodeRef<'_>, c: &Context<'_, '_, '_>, out: &mut Vec<Finding>) {
-        let AnyNodeRef::ModModule(module) = node else {
-            return;
-        };
         struct Entries<'a>(Vec<(&'a Stmt, bool)>);
         impl<'a> SourceOrderVisitor<'a> for Entries<'a> {
             fn visit_stmt(&mut self, stmt: &'a Stmt) {
@@ -59,12 +56,15 @@ impl LintRule for AllBottom {
                     | Stmt::With(_)
                     | Stmt::Try(_)
                     | Stmt::Match(_) => {
-                        ruff_python_ast::visitor::source_order::walk_stmt(self, stmt)
+                        ruff_python_ast::visitor::source_order::walk_stmt(self, stmt);
                     }
                     _ => self.0.push((stmt, all_statement(stmt))),
                 }
             }
         }
+        let AnyNodeRef::ModModule(module) = node else {
+            return;
+        };
         let mut entries = Entries(Vec::new());
         entries.visit_body(&module.body);
         let Some(last) = entries.0.iter().rposition(|(_, all)| !all) else {
@@ -197,7 +197,7 @@ struct Known {
 }
 #[derive(Default)]
 struct Aliases {
-    aliases: HashMap<String, usize>,
+    bindings: HashMap<String, usize>,
     values: Vec<Known>,
     shadowed: HashSet<String>,
 }
@@ -210,7 +210,7 @@ fn string(e: &Expr) -> Option<String> {
 }
 impl Aliases {
     fn known(&self, name: &str) -> Option<&Known> {
-        self.aliases.get(name).and_then(|id| self.values.get(*id))
+        self.bindings.get(name).and_then(|id| self.values.get(*id))
     }
     fn collection(&self, e: &Expr) -> Option<Vec<(TextRange, String)>> {
         match e {
@@ -280,35 +280,35 @@ impl Aliases {
     }
     fn forget(&mut self, target: &Expr) {
         for name in targets(target) {
-            self.aliases.remove(name.id.as_str());
+            self.bindings.remove(name.id.as_str());
         }
     }
     fn invalidate(&mut self, id: usize) {
-        self.aliases.retain(|_, candidate| *candidate != id);
+        self.bindings.retain(|_, candidate| *candidate != id);
     }
     fn mutated_target(&mut self, target: &Expr) {
         if let Expr::Subscript(s) = target {
             if let Expr::Name(n) = &*s.value {
-                if let Some(id) = self.aliases.get(n.id.as_str()).copied() {
+                if let Some(id) = self.bindings.get(n.id.as_str()).copied() {
                     self.invalidate(id);
                 }
             }
         }
     }
     fn bind(&mut self, name: &str) {
-        self.aliases.remove(name);
+        self.bindings.remove(name);
         if CONSTRUCTORS.contains(&name) {
             self.shadowed.insert(name.to_string());
         }
     }
     fn unbind(&mut self, name: &str) {
-        self.aliases.remove(name);
+        self.bindings.remove(name);
         self.shadowed.remove(name);
     }
     fn store(&mut self, name: &str, names: Vec<String>, kind: String) {
         let id = self.values.len();
         self.values.push(Known { names, kind });
-        self.aliases.insert(name.to_string(), id);
+        self.bindings.insert(name.to_string(), id);
     }
     fn remember(&mut self, target: &Expr, value: &Expr) {
         if matches!(target, Expr::List(_) | Expr::Tuple(_)) {
@@ -337,8 +337,8 @@ impl Aliases {
         }
         if let Some(exports) = self.collection(value) {
             if let Expr::Name(n) = value {
-                if let Some(id) = self.aliases.get(n.id.as_str()).copied() {
-                    self.aliases.insert(name.to_string(), id);
+                if let Some(id) = self.bindings.get(n.id.as_str()).copied() {
+                    self.bindings.insert(name.to_string(), id);
                 }
             } else {
                 let kind = self.kind(value).unwrap_or_else(|| "unknown".into());
@@ -349,7 +349,7 @@ impl Aliases {
                 );
             }
         } else {
-            self.aliases.remove(name);
+            self.bindings.remove(name);
         }
         if CONSTRUCTORS.contains(&name) {
             self.shadowed.insert(name.to_string());
@@ -359,7 +359,7 @@ impl Aliases {
         let Expr::Name(name) = target else {
             return;
         };
-        let Some(id) = self.aliases.get(name.id.as_str()).copied() else {
+        let Some(id) = self.bindings.get(name.id.as_str()).copied() else {
             return;
         };
         let Some(exports) = self.collection(value) else {
@@ -384,7 +384,7 @@ impl Aliases {
         let Expr::Name(alias) = &*attr.value else {
             return;
         };
-        let Some(id) = self.aliases.get(alias.id.as_str()).copied() else {
+        let Some(id) = self.bindings.get(alias.id.as_str()).copied() else {
             return;
         };
         if self.values[id].kind != "list" {
@@ -444,9 +444,6 @@ impl PrivateExports {
 }
 impl LintRule for PrivateExports {
     fn check(&self, node: AnyNodeRef<'_>, _c: &Context<'_, '_, '_>, out: &mut Vec<Finding>) {
-        let AnyNodeRef::ModModule(module) = node else {
-            return;
-        };
         struct Exports<'a> {
             rule: &'a PrivateExports,
             aliases: Aliases,
@@ -530,7 +527,7 @@ impl LintRule for PrivateExports {
                     AnyNodeRef::StmtImportFrom(s) => {
                         let builtins = s.module.as_ref().is_some_and(|m| m == "builtins");
                         if s.names.iter().any(|n| n.name.as_str() == "*") {
-                            self.aliases.aliases.clear();
+                            self.aliases.bindings.clear();
                             if !builtins {
                                 self.aliases
                                     .shadowed
@@ -562,6 +559,9 @@ impl LintRule for PrivateExports {
                 TraversalSignal::Traverse
             }
         }
+        let AnyNodeRef::ModModule(module) = node else {
+            return;
+        };
         AnyNodeRef::ModModule(module).visit_source_order(&mut Exports {
             rule: self,
             aliases: Aliases::default(),

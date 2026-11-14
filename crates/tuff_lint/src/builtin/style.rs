@@ -61,11 +61,11 @@ impl LintRule for Style {
                     "no-underscore-class",
                     class.name.range(),
                     "Class names must not start with an underscore prefix.",
-                ))
+                ));
             }
             (Self::Sorted, AnyNodeRef::StmtClassDef(class)) => check_sorted(class, c, out),
             (Self::MessageVariables, AnyNodeRef::ModModule(module)) => {
-                check_messages(module, c, out)
+                check_messages(module, c, out);
             }
             (Self::Translation, AnyNodeRef::StmtRaise(raise)) => check_translation(raise, c, out),
             _ => {}
@@ -189,18 +189,6 @@ fn resolved_tail(e: &Expr, c: &Context<'_, '_, '_>, tails: &[&str]) -> bool {
 }
 
 fn annotation_names(e: &Expr, c: &Context<'_, '_, '_>) -> HashSet<String> {
-    let simple_string = match e {
-        Expr::StringLiteral(s) => Some(s.as_single_part_string().is_some()),
-        Expr::BytesLiteral(s) => Some(s.as_single_part_bytestring().is_some()),
-        _ => None,
-    };
-    if let Some(single) = simple_string {
-        return if single {
-            HashSet::from([c.text(e.range()).trim_matches(['\'', '"']).to_string()])
-        } else {
-            HashSet::new()
-        };
-    }
     struct Names(HashSet<String>);
     impl<'a> SourceOrderVisitor<'a> for Names {
         fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
@@ -215,6 +203,18 @@ fn annotation_names(e: &Expr, c: &Context<'_, '_, '_>) -> HashSet<String> {
             }
             TraversalSignal::Traverse
         }
+    }
+    let simple_string = match e {
+        Expr::StringLiteral(s) => Some(s.as_single_part_string().is_some()),
+        Expr::BytesLiteral(s) => Some(s.as_single_part_bytestring().is_some()),
+        _ => None,
+    };
+    if let Some(single) = simple_string {
+        return if single {
+            HashSet::from([c.text(e.range()).trim_matches(['\'', '"']).to_string()])
+        } else {
+            HashSet::new()
+        };
     }
     let mut names = Names(HashSet::new());
     names.visit_expr(e);
@@ -324,6 +324,26 @@ fn method_order(o: &RuleOptions) -> Result<Box<dyn LintRule>> {
 }
 impl LintRule for MethodOrder {
     fn check(&self, node: AnyNodeRef<'_>, c: &Context<'_, '_, '_>, out: &mut Vec<Finding>) {
+        struct TypingStar {
+            before: TextSize,
+            found: bool,
+        }
+        impl<'a> SourceOrderVisitor<'a> for TypingStar {
+            fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
+                if node.start() >= self.before {
+                    return TraversalSignal::Skip;
+                }
+                if let AnyNodeRef::StmtImportFrom(import) = node {
+                    self.found |= import.level == 0
+                        && import
+                            .module
+                            .as_ref()
+                            .is_some_and(|m| matches!(m.as_str(), "typing" | "typing_extensions"))
+                        && import.names.iter().any(|n| n.name.as_str() == "*");
+                }
+                TraversalSignal::Traverse
+            }
+        }
         let AnyNodeRef::StmtClassDef(class) = node else {
             return;
         };
@@ -380,26 +400,6 @@ impl LintRule for MethodOrder {
                 }
             })
             .collect();
-        struct TypingStar {
-            before: TextSize,
-            found: bool,
-        }
-        impl<'a> SourceOrderVisitor<'a> for TypingStar {
-            fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
-                if node.start() >= self.before {
-                    return TraversalSignal::Skip;
-                }
-                if let AnyNodeRef::StmtImportFrom(import) = node {
-                    self.found |= import.level == 0
-                        && import
-                            .module
-                            .as_ref()
-                            .is_some_and(|m| matches!(m.as_str(), "typing" | "typing_extensions"))
-                        && import.names.iter().any(|n| n.name.as_str() == "*");
-                }
-                TraversalSignal::Traverse
-            }
-        }
         let mut typing_star = TypingStar {
             before: class.start(),
             found: false,
@@ -466,10 +466,6 @@ fn assignment(stmt: &Stmt) -> Option<(&ast::ExprName, Option<&Expr>)> {
     }
 }
 fn check_sorted(class: &ast::StmtClassDef, c: &Context<'_, '_, '_>, out: &mut Vec<Finding>) {
-    if !class.body.first().is_some_and(|s| matches!(s, Stmt::Expr(s) if matches!(&*s.value, Expr::StringLiteral(v) if v.value.to_string().contains("@sorted-attributes")))) { return; }
-    let mut group: Vec<(&Stmt, &str, TextSize)> = Vec::new();
-    let mut edits = Vec::new();
-    let mut safe = true;
     fn flush(
         group: &mut Vec<(&Stmt, &str, TextSize)>,
         c: &Context<'_, '_, '_>,
@@ -526,6 +522,10 @@ fn check_sorted(class: &ast::StmtClassDef, c: &Context<'_, '_, '_>, out: &mut Ve
         edits.push(Edit::range_replacement(text, TextRange::new(start, end)));
         group.clear();
     }
+    if !class.body.first().is_some_and(|s| matches!(s, Stmt::Expr(s) if matches!(&*s.value, Expr::StringLiteral(v) if v.value.to_string().contains("@sorted-attributes")))) { return; }
+    let mut group: Vec<(&Stmt, &str, TextSize)> = Vec::new();
+    let mut edits = Vec::new();
+    let mut safe = true;
     let mut previous_end = class
         .body
         .first()
@@ -626,6 +626,22 @@ fn check_messages(module: &ast::ModModule, c: &Context<'_, '_, '_>, out: &mut Ve
     }
     impl<'a> SourceOrderVisitor<'a> for Suites<'_, '_, '_, '_> {
         fn visit_body(&mut self, body: &'a [Stmt]) {
+            struct Count<'n> {
+                name: &'n str,
+                count: usize,
+            }
+            impl<'a> SourceOrderVisitor<'a> for Count<'_> {
+                fn enter_node(&mut self, n: AnyNodeRef<'a>) -> TraversalSignal {
+                    match n {
+                        AnyNodeRef::ExprName(n) if n.id == self.name => self.count += 1,
+                        AnyNodeRef::ExprAttribute(n) if n.attr.as_str() == self.name => {
+                            self.count += 1;
+                        }
+                        _ => {}
+                    }
+                    TraversalSignal::Traverse
+                }
+            }
             for (index, pair) in body.windows(2).enumerate() {
                 let statement = &pair[0];
                 let Some((target, Some(value))) = assignment(statement) else {
@@ -683,22 +699,6 @@ fn check_messages(module: &ast::ModModule, c: &Context<'_, '_, '_>, out: &mut Ve
                     continue;
                 }
                 let reference = references[0];
-                struct Count<'n> {
-                    name: &'n str,
-                    count: usize,
-                }
-                impl<'a> SourceOrderVisitor<'a> for Count<'_> {
-                    fn enter_node(&mut self, n: AnyNodeRef<'a>) -> TraversalSignal {
-                        match n {
-                            AnyNodeRef::ExprName(n) if n.id == self.name => self.count += 1,
-                            AnyNodeRef::ExprAttribute(n) if n.attr.as_str() == self.name => {
-                                self.count += 1
-                            }
-                            _ => {}
-                        }
-                        TraversalSignal::Traverse
-                    }
-                }
                 let mut count = Count {
                     name: target.id.as_str(),
                     count: 0,
@@ -845,28 +845,6 @@ impl<'a> SourceOrderVisitor<'a> for ExceptionNames {
     }
 }
 fn check_translation(raise: &ast::StmtRaise, c: &Context<'_, '_, '_>, out: &mut Vec<Finding>) {
-    let mut handler = None;
-    for ancestor in c.ancestors.iter().rev() {
-        match ancestor {
-            AnyNodeRef::ExceptHandlerExceptHandler(h) => {
-                handler = Some(*h);
-                break;
-            }
-            AnyNodeRef::StmtFunctionDef(_) | AnyNodeRef::StmtClassDef(_) => return,
-            _ => {}
-        }
-    }
-    let Some(handler) = handler else {
-        return;
-    };
-    let mut tracker = ExceptionNames {
-        names: handler.name.iter().map(ToString::to_string).collect(),
-        until: raise.start(),
-    };
-    tracker.visit_body(&handler.body);
-    let Some(Expr::Call(call)) = raise.exc.as_deref() else {
-        return;
-    };
     fn exception_name(e: &Expr, names: &HashSet<String>) -> bool {
         matches!(e, Expr::Name(n) if names.contains(n.id.as_str()))
     }
@@ -890,7 +868,7 @@ fn check_translation(raise: &ast::StmtRaise, c: &Context<'_, '_, '_>, out: &mut 
                             return false;
                         }
                         ast::InterpolatedStringElement::Interpolation(e) => {
-                            expressions.push(&*e.expression)
+                            expressions.push(&*e.expression);
                         }
                         ast::InterpolatedStringElement::Literal(_) => {}
                     }
@@ -904,6 +882,28 @@ fn check_translation(raise: &ast::StmtRaise, c: &Context<'_, '_, '_>, out: &mut 
             _ => false,
         }
     }
+    let mut handler = None;
+    for ancestor in c.ancestors.iter().rev() {
+        match ancestor {
+            AnyNodeRef::ExceptHandlerExceptHandler(h) => {
+                handler = Some(*h);
+                break;
+            }
+            AnyNodeRef::StmtFunctionDef(_) | AnyNodeRef::StmtClassDef(_) => return,
+            _ => {}
+        }
+    }
+    let Some(handler) = handler else {
+        return;
+    };
+    let mut tracker = ExceptionNames {
+        names: handler.name.iter().map(ToString::to_string).collect(),
+        until: raise.start(),
+    };
+    tracker.visit_body(&handler.body);
+    let Some(Expr::Call(call)) = raise.exc.as_deref() else {
+        return;
+    };
     for (arg, _) in call_arguments(call) {
         if translates(arg, &tracker.names, c) {
             out.push(Finding::new("no-str-exception-translation", arg.range(), "Use a fixed message when translating an exception, and preserve the cause with `raise ... from e`."));
@@ -913,9 +913,6 @@ fn check_translation(raise: &ast::StmtRaise, c: &Context<'_, '_, '_>, out: &mut 
 }
 
 fn fnmatch(pattern: &str, value: &str) -> bool {
-    let p: Vec<_> = pattern.chars().collect();
-    let v: Vec<_> = value.chars().collect();
-    let mut memo = std::collections::HashMap::new();
     fn matches(
         p: &[char],
         v: &[char],
@@ -940,18 +937,18 @@ fn fnmatch(pattern: &str, value: &str) -> bool {
                     .iter()
                     .enumerate()
                     .skip(search)
-                    .find_map(|(k, ch)| (*ch == ']').then_some(k))
+                    .find_map(|(index, ch)| (*ch == ']').then_some(index))
                 {
                     let mut hit = false;
-                    let mut k = begin;
+                    let mut index = begin;
                     if let Some(ch) = v.get(j) {
-                        while k < end {
-                            if k + 2 < end && p[k + 1] == '-' {
-                                hit |= p[k] <= *ch && *ch <= p[k + 2];
-                                k += 3;
+                        while index < end {
+                            if index + 2 < end && p[index + 1] == '-' {
+                                hit |= p[index] <= *ch && *ch <= p[index + 2];
+                                index += 3;
                             } else {
-                                hit |= p[k] == *ch;
-                                k += 1;
+                                hit |= p[index] == *ch;
+                                index += 1;
                             }
                         }
                     }
@@ -965,6 +962,9 @@ fn fnmatch(pattern: &str, value: &str) -> bool {
         memo.insert((i, j), result);
         result
     }
+    let p: Vec<_> = pattern.chars().collect();
+    let v: Vec<_> = value.chars().collect();
+    let mut memo = std::collections::HashMap::new();
     matches(&p, &v, 0, 0, &mut memo)
 }
 

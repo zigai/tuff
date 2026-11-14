@@ -562,27 +562,33 @@ fn sibling(packages: &[String], exclude: &[String], module: &str) -> Option<Stri
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct Limits {
-    max_file_lines: usize,
-    max_function_lines: usize,
-    max_method_lines: usize,
+    #[serde(rename = "max_file_lines")]
+    file: usize,
+    #[serde(rename = "max_function_lines")]
+    function: usize,
+    #[serde(rename = "max_method_lines")]
+    method: usize,
 }
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct LimitOverride {
-    max_file_lines: Option<usize>,
-    max_function_lines: Option<usize>,
-    max_method_lines: Option<usize>,
+    #[serde(rename = "max_file_lines")]
+    file: Option<usize>,
+    #[serde(rename = "max_function_lines")]
+    function: Option<usize>,
+    #[serde(rename = "max_method_lines")]
+    method: Option<usize>,
 }
 impl Limits {
     fn apply(&mut self, other: &LimitOverride) {
-        if let Some(value) = other.max_file_lines {
-            self.max_file_lines = value;
+        if let Some(value) = other.file {
+            self.file = value;
         }
-        if let Some(value) = other.max_function_lines {
-            self.max_function_lines = value;
+        if let Some(value) = other.function {
+            self.function = value;
         }
-        if let Some(value) = other.max_method_lines {
-            self.max_method_lines = value;
+        if let Some(value) = other.method {
+            self.method = value;
         }
     }
 }
@@ -605,9 +611,7 @@ fn line_count_limit(options: &RuleOptions) -> Result<Box<dyn LintRule>> {
     let raw: RawLineOptions = parse_options(options)?;
     for (pattern, limits) in raw.glob_limits.iter().chain(&raw.per_file_limits) {
         if pattern.is_empty()
-            || (limits.max_file_lines.is_none()
-                && limits.max_function_lines.is_none()
-                && limits.max_method_lines.is_none())
+            || (limits.file.is_none() && limits.function.is_none() && limits.method.is_none())
         {
             bail!("expected nonempty path pattern and at least one limit");
         }
@@ -636,9 +640,9 @@ fn line_count_limit(options: &RuleOptions) -> Result<Box<dyn LintRule>> {
     });
     Ok(Box::new(Policy::Lines(LineOptions {
         base: Limits {
-            max_file_lines: raw.max_file_lines,
-            max_function_lines: raw.max_function_lines,
-            max_method_lines: raw.max_method_lines,
+            file: raw.max_file_lines,
+            function: raw.max_function_lines,
+            method: raw.max_method_lines,
         },
         globs,
         files: raw.per_file_limits,
@@ -715,9 +719,9 @@ impl LintRule for Policy {
             Self::Names(entries) => !entries.is_empty(),
             Self::Contracts(options) => !options.contracts.is_empty(),
             Self::Lines(options) => {
-                options.base.max_file_lines > 0
-                    || options.base.max_function_lines > 0
-                    || options.base.max_method_lines > 0
+                options.base.file > 0
+                    || options.base.function > 0
+                    || options.base.method > 0
                     || !options.globs.is_empty()
                     || !options.files.is_empty()
             }
@@ -757,13 +761,13 @@ impl LintRule for Policy {
         };
         if matches!(self, Self::Lines(_)) {
             let count = splitline_count(context.source);
-            if limits.max_file_lines > 0 && count > limits.max_file_lines {
+            if limits.file > 0 && count > limits.file {
                 findings.push(Finding::new(
                     "line-count-limit",
                     context.source.full_line_range(TextSize::ZERO),
                     format!(
                         "File has {count} lines, exceeding the configured limit of {}.",
-                        limits.max_file_lines
+                        limits.file
                     ),
                 ));
             }
@@ -1117,9 +1121,9 @@ impl PolicyVisitor<'_, '_, '_, '_> {
                 .iter()
                 .any(|node| matches!(node, AnyNodeRef::StmtFunctionDef(_)));
         let limit = if method {
-            self.limits.max_method_lines
+            self.limits.method
         } else {
-            self.limits.max_function_lines
+            self.limits.function
         };
         if nested || limit == 0 {
             return;
@@ -1161,16 +1165,16 @@ impl<'ast> SourceOrderVisitor<'ast> for PolicyVisitor<'_, '_, 'ast, '_> {
                 self.function_lines(function);
             }
             AnyNodeRef::StmtClassDef(class) => {
-                self.report_name(class.name.as_str(), class.name.range(), "class")
+                self.report_name(class.name.as_str(), class.name.range(), "class");
             }
             AnyNodeRef::Parameter(parameter) => {
-                self.report_name(parameter.name.as_str(), parameter.name.range(), "parameter")
+                self.report_name(parameter.name.as_str(), parameter.name.range(), "parameter");
             }
             AnyNodeRef::ExprName(name) if name.ctx == ast::ExprContext::Store => {
-                self.report_name(name.id.as_str(), name.range(), "variable")
+                self.report_name(name.id.as_str(), name.range(), "variable");
             }
             AnyNodeRef::ExprAttribute(attribute) => {
-                self.report_name(attribute.attr.as_str(), attribute.attr.range(), "attribute")
+                self.report_name(attribute.attr.as_str(), attribute.attr.range(), "attribute");
             }
             AnyNodeRef::PatternMatchAs(pattern) => {
                 if let Some(name) = &pattern.name {
@@ -1262,9 +1266,9 @@ mod tests {
     }
     fn with_context(path: &str, root: &str, check: impl FnOnce(&Context<'_, '_, '_>)) {
         let module = ast::ModModule {
-            node_index: Default::default(),
+            node_index: ast::AtomicNodeIndex::default(),
             range: TextRange::default(),
-            body: Default::default(),
+            body: std::iter::empty().collect(),
         };
         let context = Context {
             module: &module,

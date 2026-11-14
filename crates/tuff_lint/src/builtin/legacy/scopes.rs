@@ -60,13 +60,13 @@ fn shadows_sleep(c: &Context<'_, '_, '_>) -> bool {
                     self.0 |= i
                         .names
                         .iter()
-                        .any(|a| a.asname.as_ref().unwrap_or(&a.name) == "sleep")
+                        .any(|a| a.asname.as_ref().unwrap_or(&a.name) == "sleep");
                 }
                 AnyNodeRef::StmtImportFrom(i) => {
                     self.0 |= i
                         .names
                         .iter()
-                        .any(|a| a.asname.as_ref().unwrap_or(&a.name) == "sleep")
+                        .any(|a| a.asname.as_ref().unwrap_or(&a.name) == "sleep");
                 }
                 _ => {}
             }
@@ -146,27 +146,6 @@ fn rename(
     parameter: &ast::Parameter,
     c: &Context<'_, '_, '_>,
 ) -> Option<Fix> {
-    let old = parameter.name.as_str();
-    let nodes = all_nodes(function.into());
-    if function.parameters.iter().any(|p| p.name() == "cls") {
-        return None;
-    }
-    for node in &nodes {
-        match node {
-            AnyNodeRef::ExprCall(call) if matches!(&*call.func, Expr::Name(n) if matches!(n.id.as_str(), "eval" | "exec" | "locals" | "vars")) =>
-            {
-                return None;
-            }
-            AnyNodeRef::StmtGlobal(g) if g.names.iter().any(|n| n == "cls") => return None,
-            AnyNodeRef::StmtNonlocal(g) if g.names.iter().any(|n| n == "cls" || n == old) => {
-                return None;
-            }
-            // An existing cls reference or binding could change lookup after the
-            // rename; do not guess whether a dynamic caller can observe it.
-            AnyNodeRef::ExprName(n) if n.id == "cls" => return None,
-            _ => {}
-        }
-    }
     struct Bindings<'a> {
         old: &'a str,
         ranges: Vec<TextRange>,
@@ -206,11 +185,32 @@ fn rename(
                     self.unsafe_binding |= e.name.as_ref().is_some_and(|n| n == self.old);
                 }
                 AnyNodeRef::ExprName(n) if n.id == self.old && n.ctx.is_store() => {
-                    self.ranges.push(n.range())
+                    self.ranges.push(n.range());
                 }
                 _ => {}
             }
             TraversalSignal::Traverse
+        }
+    }
+    let old = parameter.name.as_str();
+    let nodes = all_nodes(function.into());
+    if function.parameters.iter().any(|p| p.name() == "cls") {
+        return None;
+    }
+    for node in &nodes {
+        match node {
+            AnyNodeRef::ExprCall(call) if matches!(&*call.func, Expr::Name(n) if matches!(n.id.as_str(), "eval" | "exec" | "locals" | "vars")) =>
+            {
+                return None;
+            }
+            AnyNodeRef::StmtGlobal(g) if g.names.iter().any(|n| n == "cls") => return None,
+            AnyNodeRef::StmtNonlocal(g) if g.names.iter().any(|n| n == "cls" || n == old) => {
+                return None;
+            }
+            // An existing cls reference or binding could change lookup after the
+            // rename; do not guess whether a dynamic caller can observe it.
+            AnyNodeRef::ExprName(n) if n.id == "cls" => return None,
+            _ => {}
         }
     }
     let mut bindings = Bindings {

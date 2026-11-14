@@ -229,13 +229,13 @@ impl<'ast> SourceOrderVisitor<'ast> for Statements<'_> {
     fn enter_node(&mut self, node: AnyNodeRef<'ast>) -> TraversalSignal {
         match node {
             AnyNodeRef::MatchCase(node) => {
-                self.push(node.range(), node.body.first().map(statement_start))
+                self.push(node.range(), node.body.first().map(statement_start));
             }
             AnyNodeRef::ElifElseClause(node) => {
-                self.push(node.range(), node.body.first().map(statement_start))
+                self.push(node.range(), node.body.first().map(statement_start));
             }
             AnyNodeRef::ExceptHandlerExceptHandler(node) => {
-                self.push(node.range(), node.body.first().map(statement_start))
+                self.push(node.range(), node.body.first().map(statement_start));
             }
             _ => {}
         }

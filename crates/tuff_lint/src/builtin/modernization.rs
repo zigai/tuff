@@ -98,7 +98,7 @@ impl LintRule for Modernization {
                 }
             }
             (Self::StaticIf, AnyNodeRef::StmtIf(statement)) => {
-                check_condition(&statement.test, out)
+                check_condition(&statement.test, out);
             }
             (Self::StaticIf, AnyNodeRef::ElifElseClause(clause)) => {
                 if let Some(test) = &clause.test {
@@ -109,14 +109,14 @@ impl LintRule for Modernization {
         }
     }
     fn check_comment(&self, range: TextRange, c: &Context<'_, '_, '_>, out: &mut Vec<Finding>) {
-        if !matches!(self, Self::Ignore) {
-            return;
-        }
         // A directive must start a comment, or a nested whitespace-delimited
         // comment, and have a real token boundary (not noqaed/noqa-compatible).
         static NOQA: LazyLock<Option<Regex>> = LazyLock::new(|| {
             Regex::new(r"(?i)(?:^|\s)#\s*(?:(?:flake8|ruff):\s*)?noqa(?:$|[\s:,\[])").ok()
         });
+        if !matches!(self, Self::Ignore) {
+            return;
+        }
         let Some(pattern) = &*NOQA else {
             return;
         };
@@ -414,7 +414,10 @@ fn equal(a: &Literal, b: &Literal) -> bool {
         (Literal::None, Literal::None) | (Literal::Ellipsis, Literal::Ellipsis) => true,
         (Literal::String(a), Literal::String(b)) => a == b,
         (Literal::Bytes(a), Literal::Bytes(b)) => a == b,
-        (Literal::Complex(ar, ai), Literal::Complex(br, bi)) => ar == br && ai == bi,
+        (Literal::Complex(ar, ai), Literal::Complex(br, bi)) => {
+            ar.partial_cmp(br) == Some(Ordering::Equal)
+                && ai.partial_cmp(bi) == Some(Ordering::Equal)
+        }
         (Literal::Complex(real, imag), other) | (other, Literal::Complex(real, imag)) => {
             *imag == 0.0 && numeric_order(&Literal::Float(*real), other) == Some(Ordering::Equal)
         }
@@ -502,7 +505,11 @@ fn compare(a: &Literal, op: ast::CmpOp, b: &Literal) -> Option<bool> {
                 }
                 (Literal::Complex(_, _), Literal::Complex(_, _)) if equal(a, b) => return None,
                 (Literal::Int(a), Literal::Int(b)) if a == b => return None,
-                (Literal::Float(a), Literal::Float(b)) if a == b => return None,
+                (Literal::Float(a), Literal::Float(b))
+                    if a.partial_cmp(b) == Some(Ordering::Equal) =>
+                {
+                    return None;
+                }
                 _ => false,
             };
             Some(if op == CmpOp::Is { same } else { !same })
