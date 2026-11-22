@@ -510,8 +510,8 @@ struct GoogleArgCandidate {
 }
 
 /// An abstraction for printing each line of a docstring.
-struct DocstringLinePrinter<'ast, 'buf, 'fmt, 'src> {
-    f: &'fmt mut PyFormatter<'ast, 'buf>,
+struct DocstringLinePrinter<'ast, 'buf, 'state, 'fmt, 'src> {
+    f: &'fmt mut PyFormatter<'ast, 'buf, 'state>,
 
     /// A queue of actions to perform.
     ///
@@ -544,7 +544,7 @@ struct DocstringLinePrinter<'ast, 'buf, 'fmt, 'src> {
     code_example: CodeExample<'src>,
 }
 
-impl<'src> DocstringLinePrinter<'_, '_, '_, 'src> {
+impl<'src> DocstringLinePrinter<'_, '_, '_, '_, 'src> {
     /// Print all of the lines in the given iterator to this
     /// printer's formatter.
     ///
@@ -1712,10 +1712,7 @@ impl<'src> CodeExampleMarkdown<'src> {
             self.fence_kind.to_char().is_ascii(),
             "fence char should be ASCII",
         );
-        if !rest[fence_len..].chars().all(is_python_whitespace) {
-            return false;
-        }
-        true
+        rest[fence_len..].chars().all(is_python_whitespace)
     }
 
     /// Pushes the given line as part of this code example.

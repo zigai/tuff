@@ -56,7 +56,7 @@ pub(crate) fn magic_comma(f: &PyFormatter, last_end: TextSize, end: TextSize) ->
 // Include commas in each fill entry so that fitting also accounts for the
 // punctuation at the end of a packed row.
 pub(crate) fn packed<'ast, I, T>(
-    f: &mut PyFormatter<'ast, '_>,
+    f: &mut PyFormatter<'ast, '_, '_>,
     left: &'static str,
     right: &'static str,
     entries: I,

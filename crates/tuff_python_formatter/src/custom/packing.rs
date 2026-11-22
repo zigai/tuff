@@ -245,7 +245,7 @@ fn packed(
 }
 
 pub(crate) fn optional_delimited<'ast>(
-    f: &mut PyFormatter<'ast, '_>,
+    f: &mut PyFormatter<'ast, '_, '_>,
     left: &'static str,
     content: &impl Format<PyFormatContext<'ast>>,
     right: &'static str,
@@ -264,7 +264,7 @@ pub(crate) fn optional_delimited<'ast>(
 }
 
 pub(crate) fn delimited<'ast>(
-    f: &mut PyFormatter<'ast, '_>,
+    f: &mut PyFormatter<'ast, '_, '_>,
     left: &'static str,
     content: &impl Format<PyFormatContext<'ast>>,
     right: &'static str,

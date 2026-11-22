@@ -375,8 +375,7 @@ impl Configuration {
                 project_root: project_root.to_path_buf(),
                 allowed_confusables: lint
                     .allowed_confusables
-                    .map(FxHashSet::from_iter)
-                    .unwrap_or_default(),
+                    .map_or_default(FxHashSet::from_iter),
                 builtins: self.builtins.unwrap_or_default(),
                 dummy_variable_rgx: lint
                     .dummy_variable_rgx
@@ -415,28 +414,22 @@ impl Configuration {
                 // Plugins
                 flake8_annotations: lint
                     .flake8_annotations
-                    .map(Flake8AnnotationsOptions::into_settings)
-                    .unwrap_or_default(),
-                flake8_bandit: lint
-                    .flake8_bandit
-                    .map(|flake8_bandit| flake8_bandit.into_settings(lint.ruff.as_ref()))
-                    .unwrap_or_default(),
+                    .map_or_default(Flake8AnnotationsOptions::into_settings),
+                flake8_bandit: lint.flake8_bandit.map_or_default(|flake8_bandit| {
+                    flake8_bandit.into_settings(lint.ruff.as_ref())
+                }),
                 flake8_boolean_trap: lint
                     .flake8_boolean_trap
-                    .map(Flake8BooleanTrapOptions::into_settings)
-                    .unwrap_or_default(),
+                    .map_or_default(Flake8BooleanTrapOptions::into_settings),
                 flake8_bugbear: lint
                     .flake8_bugbear
-                    .map(Flake8BugbearOptions::into_settings)
-                    .unwrap_or_default(),
+                    .map_or_default(Flake8BugbearOptions::into_settings),
                 flake8_builtins: lint
                     .flake8_builtins
-                    .map(Flake8BuiltinsOptions::into_settings)
-                    .unwrap_or_default(),
+                    .map_or_default(Flake8BuiltinsOptions::into_settings),
                 flake8_comprehensions: lint
                     .flake8_comprehensions
-                    .map(Flake8ComprehensionsOptions::into_settings)
-                    .unwrap_or_default(),
+                    .map_or_default(Flake8ComprehensionsOptions::into_settings),
                 flake8_copyright: lint
                     .flake8_copyright
                     .map(Flake8CopyrightOptions::try_into_settings)
@@ -444,12 +437,10 @@ impl Configuration {
                     .unwrap_or_default(),
                 flake8_errmsg: lint
                     .flake8_errmsg
-                    .map(Flake8ErrMsgOptions::into_settings)
-                    .unwrap_or_default(),
+                    .map_or_default(Flake8ErrMsgOptions::into_settings),
                 flake8_implicit_str_concat: lint
                     .flake8_implicit_str_concat
-                    .map(Flake8ImplicitStrConcatOptions::into_settings)
-                    .unwrap_or_default(),
+                    .map_or_default(Flake8ImplicitStrConcatOptions::into_settings),
                 flake8_import_conventions,
                 flake8_pytest_style: lint
                     .flake8_pytest_style
@@ -458,12 +449,10 @@ impl Configuration {
                     .unwrap_or_default(),
                 flake8_quotes: lint
                     .flake8_quotes
-                    .map(Flake8QuotesOptions::into_settings)
-                    .unwrap_or_default(),
+                    .map_or_default(Flake8QuotesOptions::into_settings),
                 flake8_self: lint
                     .flake8_self
-                    .map(Flake8SelfOptions::into_settings)
-                    .unwrap_or_default(),
+                    .map_or_default(Flake8SelfOptions::into_settings),
                 flake8_tidy_imports: lint
                     .flake8_tidy_imports
                     .map(Flake8TidyImportsOptions::try_into_settings)
@@ -471,21 +460,15 @@ impl Configuration {
                     .unwrap_or_default(),
                 flake8_type_checking: lint
                     .flake8_type_checking
-                    .map(Flake8TypeCheckingOptions::into_settings)
-                    .unwrap_or_default(),
+                    .map_or_default(Flake8TypeCheckingOptions::into_settings),
                 flake8_unused_arguments: lint
                     .flake8_unused_arguments
-                    .map(Flake8UnusedArgumentsOptions::into_settings)
-                    .unwrap_or_default(),
+                    .map_or_default(Flake8UnusedArgumentsOptions::into_settings),
                 flake8_gettext: lint
                     .flake8_gettext
-                    .map(Flake8GetTextOptions::into_settings)
-                    .unwrap_or_default(),
+                    .map_or_default(Flake8GetTextOptions::into_settings),
                 isort,
-                mccabe: lint
-                    .mccabe
-                    .map(McCabeOptions::into_settings)
-                    .unwrap_or_default(),
+                mccabe: lint.mccabe.map_or_default(McCabeOptions::into_settings),
                 pep8_naming: lint
                     .pep8_naming
                     .map(Pep8NamingOptions::try_into_settings)
@@ -501,28 +484,16 @@ impl Configuration {
                 },
                 pydoclint: lint
                     .pydoclint
-                    .map(PydoclintOptions::into_settings)
-                    .unwrap_or_default(),
+                    .map_or_default(PydoclintOptions::into_settings),
                 pydocstyle: lint
                     .pydocstyle
-                    .map(PydocstyleOptions::into_settings)
-                    .unwrap_or_default(),
-                pyflakes: lint
-                    .pyflakes
-                    .map(PyflakesOptions::into_settings)
-                    .unwrap_or_default(),
-                pylint: lint
-                    .pylint
-                    .map(PylintOptions::into_settings)
-                    .unwrap_or_default(),
+                    .map_or_default(PydocstyleOptions::into_settings),
+                pyflakes: lint.pyflakes.map_or_default(PyflakesOptions::into_settings),
+                pylint: lint.pylint.map_or_default(PylintOptions::into_settings),
                 pyupgrade: lint
                     .pyupgrade
-                    .map(PyUpgradeOptions::into_settings)
-                    .unwrap_or_default(),
-                ruff: lint
-                    .ruff
-                    .map(RuffOptions::into_settings)
-                    .unwrap_or_default(),
+                    .map_or_default(PyUpgradeOptions::into_settings),
+                ruff: lint.ruff.map_or_default(RuffOptions::into_settings),
                 typing_extensions: lint.typing_extensions.unwrap_or(true),
                 future_annotations,
             },
@@ -601,30 +572,24 @@ impl Configuration {
                 })
                 .transpose()
                 .map_err(|e| anyhow!("Invalid `extend` value: {e}"))?,
-            extend_exclude: options
-                .extend_exclude
-                .map(|paths| {
-                    paths
-                        .into_iter()
-                        .map(|pattern| {
-                            let absolute = GlobPath::normalize(&pattern, project_root);
-                            FilePattern::User(pattern, absolute)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            extend_include: options
-                .extend_include
-                .map(|paths| {
-                    paths
-                        .into_iter()
-                        .map(|pattern| {
-                            let absolute = GlobPath::normalize(&pattern, project_root);
-                            FilePattern::User(pattern, absolute)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
+            extend_exclude: options.extend_exclude.map_or_default(|paths| {
+                paths
+                    .into_iter()
+                    .map(|pattern| {
+                        let absolute = GlobPath::normalize(&pattern, project_root);
+                        FilePattern::User(pattern, absolute)
+                    })
+                    .collect()
+            }),
+            extend_include: options.extend_include.map_or_default(|paths| {
+                paths
+                    .into_iter()
+                    .map(|pattern| {
+                        let absolute = GlobPath::normalize(&pattern, project_root);
+                        FilePattern::User(pattern, absolute)
+                    })
+                    .collect()
+            }),
             include: options.include.map(|paths| {
                 paths
                     .into_iter()
@@ -730,27 +695,22 @@ impl Configuration {
     #[must_use]
     pub(crate) fn apply_fallbacks(
         mut self,
-        origin: ConfigurationOrigin,
+        origin: ConfigurationOrigin<'_>,
         initial_config_path: &Path,
     ) -> Self {
-        if matches!(origin, ConfigurationOrigin::Ancestor) {
-            self.target_version = self.target_version.or_else(|| {
-                let dir = initial_config_path.parent()?;
-                let fallback = pyproject::find_fallback_target_version(dir)?;
-                debug!("Derived `target-version` from `requires-python`: {fallback:?}");
-                Some(fallback.into())
-            });
+        let directory = match origin {
+            ConfigurationOrigin::Ancestor if self.target_version.is_none() => {
+                initial_config_path.parent()
+            }
+            // The `requires-python` constraint from the `pyproject.toml` takes precedence
+            // over the `target-version` from the user configuration.
+            ConfigurationOrigin::UserSettings { fallback_directory } => Some(fallback_directory),
+            _ => None,
+        };
+        if let Some(version) = directory.and_then(pyproject::find_fallback_target_version) {
+            debug!("Derived `target-version` from `requires-python`: {version:?}");
+            self.target_version = Some(version.into());
         }
-        // If the origin is UserSettings, we need more information
-        // to determine where to search for a fallback target version.
-        // - If Ruff is being invoked via the CLI, then we search in
-        // the cwd.
-        // - If Ruff is being invoked via the server, then we search
-        // in the editor's workspace root.
-        //
-        // This logic is implemented manually, at the time of this
-        // writing 2026-01-30, in `ruff::resolve::resolve` and
-        // `ruff_server::session::index::ruff_settings::RuffSettings::fallback`, respectively.
         self
     }
 }
@@ -873,18 +833,16 @@ impl LintConfiguration {
                 .map(|pattern| Regex::new(&pattern))
                 .transpose()
                 .map_err(|e| anyhow!("Invalid `dummy-variable-rgx` value: {e}"))?,
-            extend_per_file_ignores: options
-                .common
-                .extend_per_file_ignores
-                .map(|per_file_ignores| {
+            extend_per_file_ignores: options.common.extend_per_file_ignores.map_or_default(
+                |per_file_ignores| {
                     per_file_ignores
                         .into_iter()
                         .map(|(pattern, prefixes)| {
                             PerFileIgnore::new(pattern, prefixes, Some(project_root))
                         })
                         .collect()
-                })
-                .unwrap_or_default(),
+                },
+            ),
             external: options.common.external,
             ignore_init_module_imports,
             explicit_preview_rules: options.common.explicit_preview_rules,
@@ -972,7 +930,6 @@ impl LintConfiguration {
         let mut carryover_unfixables: Option<&[RuleSelector]> = None;
 
         // Store selectors for displaying warnings
-        let mut redirects = FxHashMap::default();
         let mut deprecated_selectors = FxHashSet::default();
         let mut removed_selectors = FxHashSet::default();
         let mut removed_ignored_rules = FxHashSet::default();
@@ -1161,19 +1118,6 @@ impl LintConfiguration {
                         }
                     }
                 }
-
-                // Redirected rules
-                if let RuleSelector::Prefix {
-                    redirected_from: Some(redirect_from),
-                    ..
-                }
-                | RuleSelector::Rule {
-                    redirected_from: Some(redirect_from),
-                    ..
-                } = selector
-                {
-                    redirects.insert(*redirect_from, selector);
-                }
             }
         }
 
@@ -1212,12 +1156,6 @@ impl LintConfiguration {
             warn_user_once_by_message!(
                 "The following rules have been removed and ignoring them has no effect:{rules}"
             );
-        }
-
-        for (from, target) in redirects.iter().sorted_by_key(|item| item.0) {
-            let (prefix, code) = target.prefix_and_code();
-            // TODO(martin): This belongs into the ruff crate.
-            warn_user_once_by_id!(from, "`{from}` has been remapped to `{prefix}{code}`.");
         }
 
         if preview.mode.is_disabled() {
@@ -1906,7 +1844,7 @@ mod tests {
             explicit_preview_rules: preview.as_ref().map(|preview| preview.require_explicit),
             ..LintConfiguration::default()
         }
-        .as_rule_table(preview.map(|preview| preview.mode).unwrap_or_default())?
+        .as_rule_table(preview.map_or_default(|preview| preview.mode))?
         .iter_enabled()
         .collect())
     }

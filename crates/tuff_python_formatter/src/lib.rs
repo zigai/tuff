@@ -61,7 +61,7 @@ pub type TuffFormatContext<'a> = PyFormatContext<'a>;
 pub type TuffFormatOptions = PyFormatOptions;
 
 /// 'ast is the lifetime of the source code (input), 'buf is the lifetime of the buffer (output)
-pub(crate) type PyFormatter<'ast, 'buf> = Formatter<'buf, PyFormatContext<'ast>>;
+pub(crate) type PyFormatter<'ast, 'buf, 'state> = Formatter<'buf, 'state, PyFormatContext<'ast>>;
 
 /// Rule for formatting a Python AST node.
 pub(crate) trait FormatNodeRule<N>
@@ -70,9 +70,14 @@ where
     for<'a> AnyNodeRef<'a>: From<&'a N>,
 {
     fn fmt(&self, node: &N, f: &mut PyFormatter) -> FormatResult<()> {
-        let comments = f.context().comments().clone();
-
         let node_ref = AnyNodeRef::from(node);
+        let comments = f.context().comments();
+        if !f.options().source_map_generation().is_enabled() && !comments.may_have_comment(node_ref)
+        {
+            return self.fmt_fields(node, f);
+        }
+
+        let comments = comments.clone();
         let node_comments = comments.leading_dangling_trailing(node_ref);
 
         leading_comments(node_comments.leading).fmt(f)?;
