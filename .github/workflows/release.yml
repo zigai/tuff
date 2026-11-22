@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*-zigai.*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { os: linux, arch: amd64, runner: ubuntu-22.04, ext: tar.gz }
+          - { os: linux, arch: arm64, runner: ubuntu-22.04-arm, ext: tar.gz }
+          - { os: darwin, arch: amd64, runner: macos-15-intel, ext: tar.gz }
+          - { os: darwin, arch: arm64, runner: macos-15, ext: tar.gz }
+          - { os: windows, arch: amd64, runner: windows-2022, ext: zip }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: "1.100.0"
+      - name: Build
+        shell: bash
+        env:
+          TUFF_BUILD_VERSION: ${{ github.ref_name }}
+          TUFF_BUILD_DIRTY: "false"
+        run: TUFF_BUILD_COMMIT="${GITHUB_SHA::10}" cargo build --release --locked -p ruff --bin tuff
+      - name: Package
+        shell: bash
+        run: |
+          name="tuff_${GITHUB_REF_NAME#v}_${{ matrix.os }}_${{ matrix.arch }}"
+          mkdir -p "dist/$name"
+          cp LICENSE README.md "dist/$name/"
+          if [ "${{ matrix.os }}" = windows ]; then
+            cp target/release/tuff.exe "dist/$name/"
+            (cd dist && 7z a "$name.zip" "$name" >/dev/null)
+          else
+            cp target/release/tuff "dist/$name/"
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+          fi
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: tuff-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/tuff_*.${{ matrix.ext }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Upload release files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum tuff_* > checksums.txt
+          gh release upload "$GITHUB_REF_NAME" tuff_* checksums.txt --clobber --repo "$GITHUB_REPOSITORY"
