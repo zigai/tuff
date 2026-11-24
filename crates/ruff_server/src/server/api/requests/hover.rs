@@ -2,6 +2,7 @@ use crate::edit::{RangeExt, ToRangeExt};
 use crate::server::Result;
 use crate::session::{Client, DocumentSnapshot};
 use crate::tuff::python_rules;
+use crate::tuff::throws;
 use anyhow::Context;
 use lsp_types::{self as types, HoverRequest};
 use ruff_linter::FixAvailability;
@@ -40,11 +41,12 @@ impl super::BackgroundDocumentRequestHandler for Hover {
             }
         };
 
-        Ok(hover(&snapshot, &params.text_document_position_params))
+        let position = &params.text_document_position_params;
+        Ok(noqa_hover(&snapshot, position).or_else(|| throws::hover(&snapshot, position)))
     }
 }
 
-fn hover(
+fn noqa_hover(
     snapshot: &DocumentSnapshot,
     position: &types::TextDocumentPositionParams,
 ) -> Option<types::Hover> {

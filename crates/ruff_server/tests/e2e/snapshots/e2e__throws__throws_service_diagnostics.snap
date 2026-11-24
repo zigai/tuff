@@ -1,0 +1,106 @@
+---
+source: crates/ruff_server/tests/e2e/throws.rs
+expression: service
+---
+[
+  {
+    "range": {
+      "start": {
+        "line": 7,
+        "character": 11
+      },
+      "end": {
+        "line": 7,
+        "character": 22
+      }
+    },
+    "severity": 2,
+    "code": "THROWS003",
+    "source": "Tuff",
+    "message": "`declared` raises `NotFound`, which its contract does not declare",
+    "relatedInformation": [
+      {
+        "location": {
+          "uri": "file://<temp_dir>/app/service.py",
+          "range": {
+            "start": {
+              "line": 7,
+              "character": 11
+            },
+            "end": {
+              "line": 7,
+              "character": 22
+            }
+          }
+        },
+        "message": "`declared` calls `load()`"
+      },
+      {
+        "location": {
+          "uri": "file://<temp_dir>/app/core.py",
+          "range": {
+            "start": {
+              "line": 4,
+              "character": 4
+            },
+            "end": {
+              "line": 4,
+              "character": 23
+            }
+          }
+        },
+        "message": "`load` raises `NotFound`"
+      }
+    ]
+  },
+  {
+    "range": {
+      "start": {
+        "line": 17,
+        "character": 8
+      },
+      "end": {
+        "line": 17,
+        "character": 11
+      }
+    },
+    "severity": 2,
+    "code": "THROWS004",
+    "source": "Tuff",
+    "message": "`Child.run` can raise `NotFound`, which the overridden `Base.run` does not declare",
+    "relatedInformation": [
+      {
+        "location": {
+          "uri": "file://<temp_dir>/app/service.py",
+          "range": {
+            "start": {
+              "line": 18,
+              "character": 15
+            },
+            "end": {
+              "line": 18,
+              "character": 26
+            }
+          }
+        },
+        "message": "`Child.run` calls `load()`"
+      },
+      {
+        "location": {
+          "uri": "file://<temp_dir>/app/core.py",
+          "range": {
+            "start": {
+              "line": 4,
+              "character": 4
+            },
+            "end": {
+              "line": 4,
+              "character": 23
+            }
+          }
+        },
+        "message": "`load` raises `NotFound`"
+      }
+    ]
+  }
+]

@@ -11,6 +11,7 @@ use crate::format::FormatBackend;
 use crate::session::request_queue::RequestQueue;
 use crate::session::settings::GlobalClientSettings;
 use crate::tuff::python_rules;
+use crate::tuff::throws::ThrowsIndex;
 use crate::workspace::Workspaces;
 use crate::{PositionEncoding, TextDocument, WorkspaceTrust};
 
@@ -49,6 +50,9 @@ pub(crate) struct Session {
     shutdown_requested: bool,
 
     python_rule_watchers: python_rules::Watchers,
+
+    /// Exception-flow analyses of the projects that configure throws.
+    throws: Arc<ThrowsIndex>,
 }
 
 /// An immutable snapshot of `Session` that references
@@ -59,6 +63,7 @@ pub(crate) struct DocumentSnapshot {
     document_ref: index::DocumentQuery,
     position_encoding: PositionEncoding,
     workspace_trust: WorkspaceTrust,
+    throws: Arc<ThrowsIndex>,
 }
 
 impl Session {
@@ -81,6 +86,7 @@ impl Session {
             request_queue: RequestQueue::new(),
             shutdown_requested: false,
             python_rule_watchers: python_rules::Watchers::new(client_capabilities),
+            throws: Arc::default(),
         })
     }
 
@@ -116,6 +122,7 @@ impl Session {
             document_ref: self.index.make_document_ref(key, &self.global_settings)?,
             position_encoding: self.position_encoding,
             workspace_trust: self.workspace_trust,
+            throws: self.throws.clone(),
         })
     }
 
@@ -141,7 +148,9 @@ impl Session {
         let encoding = self.encoding();
 
         self.index
-            .update_text_document(key, content_changes, new_version, encoding)
+            .update_text_document(key, content_changes, new_version, encoding)?;
+        self.sync_throws_document(key);
+        Ok(())
     }
 
     /// Updates a notebook document at the associated `key` with potentially new
@@ -170,19 +179,51 @@ impl Session {
     /// Registers a text document at the provided `uri`.
     /// If a document is already open here, it will be overwritten.
     pub(crate) fn open_text_document(&mut self, uri: Uri, document: TextDocument) {
+        let key = self.key_from_uri(uri.clone());
         self.index.open_text_document(uri, document);
+        self.sync_throws_document(&key);
     }
 
     /// De-registers a document, specified by its key.
     /// Calling this multiple times for the same document is a logic error.
     pub(crate) fn close_document(&mut self, key: &DocumentKey) -> crate::Result<()> {
         self.index.close_document(key)?;
+        if let DocumentKey::Text(uri) = key
+            && let Ok(path) = uri.to_file_path()
+        {
+            self.throws.document_closed(&path);
+        }
         Ok(())
     }
 
     /// Reloads the settings index based on the provided changes.
     pub(crate) fn reload_settings(&mut self, changes: &[FileEvent], client: &Client) {
         self.index.reload_settings(changes, client);
+        self.throws.clear();
+        let keys: Vec<_> = self
+            .index
+            .text_document_uris()
+            .map(|uri| DocumentKey::Text(uri.clone()))
+            .collect();
+        for key in &keys {
+            self.sync_throws_document(key);
+        }
+    }
+
+    /// Passes the current contents of a text document to the exception-flow analysis.
+    fn sync_throws_document(&self, key: &DocumentKey) {
+        let DocumentKey::Text(uri) = key else {
+            return;
+        };
+        let Ok(path) = uri.to_file_path() else {
+            return;
+        };
+        self.throws.document_changed(&path, || {
+            let query = self
+                .index
+                .make_document_ref(key.clone(), &self.global_settings)?;
+            Some(query.as_single_document().ok()?.contents().to_string())
+        });
     }
 
     pub(crate) fn update_python_rule_watchers(&mut self) -> python_rules::WatcherUpdate {
@@ -267,6 +308,10 @@ impl DocumentSnapshot {
         &self.document_ref
     }
 
+    pub(crate) fn throws(&self) -> &ThrowsIndex {
+        &self.throws
+    }
+
     pub(crate) fn encoding(&self) -> PositionEncoding {
         self.position_encoding
     }
@@ -317,6 +362,7 @@ mod tests {
             request_queue: RequestQueue::new(),
             shutdown_requested: false,
             python_rule_watchers: python_rules::Watchers::new(&ClientCapabilities::default()),
+            throws: Arc::default(),
         };
         let uri: Uri = "untitled:test.py".parse()?;
         session.open_text_document(uri.clone(), TextDocument::new(String::new(), 1));

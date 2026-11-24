@@ -14,6 +14,7 @@ use crate::{
     resolve::is_document_excluded_for_linting,
     session::DocumentQuery,
     tuff::python_rules,
+    tuff::throws::{self, ThrowsIndex},
 };
 use ruff_db::diagnostic::{Annotation, Diagnostic, Span, SubDiagnostic};
 use ruff_diagnostics::{Applicability, Edit, Fix};
@@ -76,6 +77,7 @@ pub(crate) type DiagnosticsMap = FxHashMap<lsp_types::Uri, Vec<lsp_types::Diagno
 
 pub(crate) fn check(
     query: &DocumentQuery,
+    throws_index: &ThrowsIndex,
     encoding: PositionEncoding,
     show_syntax_errors: bool,
     supports_related_information: bool,
@@ -158,10 +160,18 @@ pub(crate) fn check(
                 .push(diagnostic);
         }
     } else {
-        diagnostics_map
+        let document_diagnostics = diagnostics_map
             .entry(query.make_key().into_uri())
-            .or_default()
-            .extend(lsp_diagnostics.map(|(_, diagnostic)| diagnostic));
+            .or_default();
+        document_diagnostics.extend(lsp_diagnostics.map(|(_, diagnostic)| diagnostic));
+        if let SourceType::Python(_) = query.source_type_for_lint() {
+            document_diagnostics.extend(throws::diagnostics(
+                throws_index,
+                query,
+                encoding,
+                supports_related_information,
+            ));
+        }
     }
 
     diagnostics_map

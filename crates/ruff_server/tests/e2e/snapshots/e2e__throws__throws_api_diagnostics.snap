@@ -1,0 +1,76 @@
+---
+source: crates/ruff_server/tests/e2e/throws.rs
+expression: api
+---
+[
+  {
+    "range": {
+      "start": {
+        "line": 5,
+        "character": 11
+      },
+      "end": {
+        "line": 5,
+        "character": 22
+      }
+    },
+    "severity": 2,
+    "code": "THROWS001",
+    "source": "Tuff",
+    "message": "`NotFound` escapes boundary `handler` unhandled",
+    "relatedInformation": [
+      {
+        "location": {
+          "uri": "file://<temp_dir>/app/api.py",
+          "range": {
+            "start": {
+              "line": 5,
+              "character": 11
+            },
+            "end": {
+              "line": 5,
+              "character": 22
+            }
+          }
+        },
+        "message": "`handler` calls `load()`"
+      },
+      {
+        "location": {
+          "uri": "file://<temp_dir>/app/core.py",
+          "range": {
+            "start": {
+              "line": 4,
+              "character": 4
+            },
+            "end": {
+              "line": 4,
+              "character": 23
+            }
+          }
+        },
+        "message": "`load` raises `NotFound`"
+      }
+    ]
+  },
+  {
+    "range": {
+      "start": {
+        "line": 11,
+        "character": 11
+      },
+      "end": {
+        "line": 11,
+        "character": 18
+      }
+    },
+    "severity": 2,
+    "code": "THROWS002",
+    "source": "Tuff",
+    "message": "`Invalid` is never raised in the `try` block",
+    "tags": [
+      1
+    ],
+    "relatedInformation": []
+  }
+]

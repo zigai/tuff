@@ -181,6 +181,18 @@ impl Server {
                                     ),
                                     kind: None,
                                 },
+                                FileSystemWatcher {
+                                    glob_pattern: types::GlobPattern::Pattern(
+                                        "**/tuff.toml".into(),
+                                    ),
+                                    kind: None,
+                                },
+                                FileSystemWatcher {
+                                    glob_pattern: types::GlobPattern::Pattern(
+                                        "**/.tuff.toml".into(),
+                                    ),
+                                    kind: None,
+                                },
                             ],
                         })
                         .unwrap(),

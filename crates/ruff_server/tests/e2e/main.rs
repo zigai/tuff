@@ -32,6 +32,7 @@ mod diagnostics;
 mod hover;
 mod notebook;
 mod python_rules;
+mod throws;
 mod workspace;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -735,7 +736,6 @@ impl TestServer {
     }
 
     /// Send a `textDocument/didClose` notification
-    #[expect(dead_code)]
     pub(crate) fn close_text_document(&mut self, path: impl AsRef<Path>) {
         let params = DidCloseTextDocumentParams {
             text_document: TextDocumentIdentifier {
@@ -1039,7 +1039,6 @@ impl TestServerBuilder {
     }
 
     /// Enable or disable pull diagnostics capability
-    #[expect(dead_code)]
     pub(crate) fn enable_pull_diagnostics(mut self, enabled: bool) -> Self {
         self.client_capabilities
             .text_document

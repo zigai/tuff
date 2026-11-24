@@ -3722,6 +3722,7 @@ dependencies = [
  "tracing-subscriber",
  "tuff_lint",
  "tuff_python_rules",
+ "tuff_throws",
 ]
 
 [[package]]

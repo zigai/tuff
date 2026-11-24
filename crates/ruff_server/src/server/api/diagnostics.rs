@@ -10,6 +10,7 @@ pub(super) fn generate_diagnostics(snapshot: &DocumentSnapshot) -> DiagnosticsMa
         let document = snapshot.query();
         crate::lint::check(
             document,
+            snapshot.throws(),
             snapshot.encoding(),
             snapshot.client_settings().show_syntax_errors(),
             snapshot
