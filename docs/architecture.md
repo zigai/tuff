@@ -19,6 +19,7 @@ Tuff-owned code lives in:
 - `crates/tuff_lint` and `crates/tuff_lint_macros`
 - `crates/tuff_python_rules`
 - `crates/tuff_throws`, the exception-flow analyzer behind `tuff throws`. Only its `ty_adapter` module depends on ty and `ruff_db`.
+- `crates/ruff_server/src/tuff` (editor support for Python rules and exception-flow diagnostics and hover)
 - `crates/ruff_linter/src/tuff.rs` and `rules/tuff.rs`
 - `crates/ruff_workspace/src/tuff.rs`
 - `crates/ruff/src/tuff`

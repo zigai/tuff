@@ -89,15 +89,40 @@ Selector keys per rule:
 - `in_async`: `true` matches only inside `async def` bodies; `false` matches only outside them.
 - `decorators`: shell-style patterns. The entry matches only inside a function or class with a matching decorator, by written or resolved name.
 
-## Generic rules
+### Architecture and size rules
 
-| Rule                                                  | Description                                                         | Options                          |
-| ----------------------------------------------------- | ------------------------------------------------------------------- | -------------------------------- |
-| `no-del-unused-argument` (`TUF024`)                   | Prefix unused arguments with `_` instead of `del`. Fixable.         | `excluded_path_parts`            |
-| `require-subprocess-run-timeout` (`TUF025`)           | Require a non-`None` `timeout` on `subprocess.run`.                 | none                             |
-| `require-typed-empty-container-assignment` (`TUF026`) | Annotate names assigned an empty list, dict, or set.                | none                             |
-| `respect-module-all` (`TUF027`)                       | Import only names a module exports through `__all__`.               | `source_roots`, `module_exports` |
-| `no-boilerplate-docstrings` (`TUF028`)                | Remove docstrings and argument entries that restate names. Fixable. | none                             |
+| Rule                                      | Description                                                | Options                                                                                      |
+| ----------------------------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `import-contracts` (`TUF004`)             | Enforce direct-import forbidden, layer, and package rules. | `source_roots`, `ignore_type_checking`, `contracts` (`forbidden`, `layers`, `independence`)  |
+| `line-count-limit` (`TUF005`)             | Limit file, function, and method line counts.              | `max_file_lines`, `max_function_lines`, `max_method_lines`, `glob_limits`, `per_file_limits` |
+| `no-relative-imports` (`TUF006`)          | Require absolute imports. Replaces `TID252`.               | none                                                                                         |
+| `no-underscore-import-aliases` (`TUF007`) | Disallow underscore-prefixed import aliases.               | none                                                                                         |
+| `no-unsafe-tempfile-factories` (`TUF008`) | Prefer managed `tempfile` context managers.                | `excluded_path_parts`                                                                        |
+
+## Style, export, typing, and modernization rules
+
+| Rule                                                  | Description                                                                 | Options                                               |
+| ----------------------------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `no-annotated-self` (`TUF009`)                        | Omit redundant instance `self` annotations. Fixable.                        | none                                                  |
+| `no-exception-message-variables` (`TUF010`)           | Inline throwaway exception messages. Fixable. Replaces `EM101`–`EM103`.     | none                                                  |
+| `no-str-exception-translation` (`TUF011`)             | Use fixed messages when translating caught exceptions.                      | none                                                  |
+| `no-underscore-class` (`TUF012`)                      | Disallow class names starting with an underscore.                           | none                                                  |
+| `public-method-order` (`TUF013`)                      | Place public methods before private helpers.                                | `class_name_patterns`, `excluded_class_name_patterns` |
+| `sorted-attributes` (`TUF014`)                        | Sort opted-in class assignment groups. Fixable.                             | none                                                  |
+| `module-all-at-bottom` (`TUF015`)                     | Place module `__all__` after runtime definitions. Fixable.                  | none                                                  |
+| `no-underscore-all-exports` (`TUF016`)                | Disallow underscore-prefixed names in `__all__`.                            | `allowed_exports`, `allow_dunder_exports`             |
+| `no-bare-object-annotations` (`TUF017`)               | Prefer narrower types over bare `object` annotations.                       | `excluded_path_parts`                                 |
+| `use-callable-ellipsis` (`TUF018`)                    | Use `Callable[..., T]` for arbitrary parameters. Fixable.                   | none                                                  |
+| `use-types-from-typing` (`TUF019`)                    | Use `typing` aliases before Python 3.9. Fixable. Replaces `UP006`, `UP035`. | none                                                  |
+| `explicit-frozen-dataclass` (`TUF020`)                | Specify `frozen=True` or `frozen=False` on dataclasses.                     | none                                                  |
+| `no-named-tuple` (`TUF021`)                           | Prefer dataclasses over named tuples. Replaces `UP014`, `PYI024`.           | none                                                  |
+| `no-static-if-condition` (`TUF022`)                   | Remove constant `if` conditions and debug clauses.                          | none                                                  |
+| `use-tuff-ignore-comment` (`TUF023`)                  | Prefer `# tuff: ignore[rule-name]` over `# noqa`.                           | none                                                  |
+| `no-del-unused-argument` (`TUF024`)                   | Prefix unused arguments with `_` instead of `del`. Fixable.                 | `excluded_path_parts`                                 |
+| `require-subprocess-run-timeout` (`TUF025`)           | Require a non-`None` `timeout` on `subprocess.run`.                         | none                                                  |
+| `require-typed-empty-container-assignment` (`TUF026`) | Annotate names assigned an empty list, dict, or set.                        | none                                                  |
+| `respect-module-all` (`TUF027`)                       | Import only names a module exports through `__all__`.                       | `source_roots`, `module_exports`                      |
+| `no-boilerplate-docstrings` (`TUF028`)                | Remove docstrings and argument entries that restate names. Fixable.         | none                                                  |
 
 `no-del-unused-argument` skips test files and paths containing a part in `excluded_path_parts` (default `["tests", "benchmarks"]`).
 
@@ -108,6 +133,34 @@ Selector keys per rule:
 source_roots = ["src"]
 module_exports = ["vendor.client=Client,connect"]
 ```
+
+## Legacy rules
+
+Select all 21 compatibility rules with `enable = ["legacy"]`. Each replaces overlapping Ruff checks when active:
+
+| Rule                                         | Fixable | Replaces Ruff codes           |
+| -------------------------------------------- | ------- | ----------------------------- |
+| `collapse-isinstance-checks` (`TUF201`)      | No      | `SIM101`                      |
+| `deprecated-unittest-asserts` (`TUF202`)     | Yes     | `UP005`                       |
+| `no-inherit-from-object` (`TUF203`)          | Yes     | `UP004`                       |
+| `no-or-in-except` (`TUF204`)                 | No      | `PLW0711`                     |
+| `no-redundant-arguments-super` (`TUF205`)    | No      | `UP008`                       |
+| `no-redundant-f-string` (`TUF206`)           | Yes     | `F541`                        |
+| `no-redundant-lambda` (`TUF207`)             | No      | `PLW0108`                     |
+| `no-redundant-list-comprehension` (`TUF208`) | No      | `C419`                        |
+| `no-string-type-annotation` (`TUF209`)       | Yes     | `UP037`, `PYI020`             |
+| `replace-union-with-optional` (`TUF210`)     | No      | `UP007`, `UP045`              |
+| `use-assert-equal` (`TUF211`)                | Yes     | `PT009`                       |
+| `use-assert-in` (`TUF212`)                   | Yes     | `PT009`                       |
+| `use-assert-is-not-none` (`TUF213`)          | Yes     | `PT009`                       |
+| `use-async-sleep-in-async-def` (`TUF214`)    | No      | `ASYNC251`                    |
+| `use-cls-in-classmethod` (`TUF215`)          | Yes     | `N804`                        |
+| `use-collections-abc` (`TUF216`)             | Yes     | `UP035`                       |
+| `use-comprehension` (`TUF217`)               | No      | `C400`–`C404`, `C411`         |
+| `use-eq-for-primitives` (`TUF218`)           | Yes     | `F632`                        |
+| `use-f-string` (`TUF219`)                    | Yes     | `UP031`, `UP032`              |
+| `use-is-for-singletons` (`TUF220`)           | Yes     | `E711`, `E712`                |
+| `use-literal` (`TUF221`)                     | Yes     | `C405`, `C406`, `C408`–`C410` |
 
 ## Blank lines
 
@@ -190,6 +243,8 @@ Include the module's definitions in `builtin::definitions`. Registration, codes,
 
 ## Reference differences
 
-The port follows Python semantics where the LibCST implementation differs: completed references respect assignment evaluation order, deferred bodies, comprehension locals, and type parameters. Quoted compound annotations use those lexical scopes. Relative imports retain their package meaning. Literal identity does not assume allocation or interning. Fixes that can invoke arbitrary equality, reorder assertion evaluation, or remove evaluated annotations require `--unsafe-fixes`; unavailable typing names are withheld. Callable recommendations remain advisory.
+The port follows Python scoping and evaluation rules where LibCST differs: completed references respect assignment evaluation order, deferred bodies, comprehension locals, and type parameters. Quoted compound annotations use those lexical scopes. Relative imports retain their package meaning.
+
+Literal identity does not assume allocation or interning. Fixes that can invoke arbitrary equality, reorder assertion evaluation, or remove evaluated annotations require `--unsafe-fixes`; unavailable typing names are withheld. Callable recommendations remain advisory.
 
 Diagnostics use Ruff AST spans and source order. Decorated definitions and generator conditions can therefore have different spans, and trailing blank-line cleanup groups a contiguous footer into one report. Unknown external ignore names are rejected. Rendered structure and safe-fix eligibility can also differ from the reference.

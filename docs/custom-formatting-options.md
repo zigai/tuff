@@ -573,7 +573,9 @@ mode = "enabled"
 ignore-magic-trailing-comma = true
 ```
 
-`calls` packs call arguments; `parameters` packs function parameters, including `/`, `*`, and variadic parameters. `mixed` enables packing only for calls containing complex arguments; enabling `calls` also handles these calls. Import packing fills rows of `from ... import ...` aliases without sorting or merging imports. Modes default to `"disabled"`; comma switches default to `false`. Commented sequences, including comments on a call target, keep Ruff's layout. Related alignment options disable packing for their sequence kind, even when no padding is needed; trailing-comment alignment disables all argument and import packing.
+`calls` packs call arguments; `parameters` packs function parameters, including `/`, `*`, and variadic parameters. `mixed` enables packing only for calls containing complex arguments; enabling `calls` also handles these calls. Import packing fills rows of `from ... import ...` aliases without sorting or merging imports.
+
+Modes default to `"disabled"`; comma switches default to `false`. Commented sequences, including comments on a call target, keep Ruff's layout. Related alignment options disable packing for their sequence kind, even when no padding is needed; trailing-comment alignment disables all argument and import packing.
 
 ## Docstring Sections
 
@@ -675,6 +677,17 @@ Accepted `statements` values:
 | `"expression"`           | Any expression statement            |
 | `"assignment"`           | Plain assignment statements         |
 | `"annotated-assignment"` | Annotated assignment statements     |
+
+## Blank Lines
+
+Configure formatter blank-line rules under `[tool.tuff.format.blank-lines]`:
+
+```toml
+[tool.tuff.format.blank-lines]
+rules = ["blank-line-before-branch", "no-suite-leading-trailing-blank-lines"]
+```
+
+Selecting a spacing rule under `[tool.tuff.lint]` enables its formatting policy as well. See [Native lint rules](native-linting.md#blank-lines) for all eight spacing rules and their per-rule options.
 
 ## Docstring Code Blocks
 
