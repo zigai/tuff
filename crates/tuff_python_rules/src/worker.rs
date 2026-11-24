@@ -137,7 +137,9 @@ impl Worker {
     fn start(spec: &WorkerSpec) -> Result<(Self, Manifest)> {
         log::debug!("Starting Python rule worker {}", spec.python.display());
         let mut child = Command::new(&spec.python)
-            .args(["-I", "-c", BOOTSTRAP])
+            // CPython validates cached bytecode by source size and whole-second mtime, so a
+            // same-size edit right after a worker imported a rule would load stale code.
+            .args(["-I", "-B", "-c", BOOTSTRAP])
             .current_dir(&spec.root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
