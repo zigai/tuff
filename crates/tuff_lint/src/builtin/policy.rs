@@ -18,6 +18,12 @@ use crate::{
 };
 
 mod bindings;
+mod filters;
+
+use filters::{
+    Advice, ContextFilter, PathScope, Shorthand, dedup_by, dotted_pattern, identifier_pattern,
+    optional, relative_path,
+};
 
 pub static RULES: &[RuleDefinition] = &[
     crate::native_rule! {
@@ -71,6 +77,18 @@ pub static RULES: &[RuleDefinition] = &[
         node_kinds: &[NodeKind::ModModule], checks_comments: false,
         create: tempfile,
     },
+    crate::native_rule! {
+        name: "forbidden-attribute", code: "TUF029", fixable: false,
+        explanation: "Ban configured attribute accesses and method calls.",
+        node_kinds: &[NodeKind::ModModule], checks_comments: false,
+        create: forbidden_attribute,
+    },
+    crate::native_rule! {
+        name: "forbidden-raise", code: "TUF030", fixable: false,
+        explanation: "Ban raising configured exception types.",
+        node_kinds: &[NodeKind::ModModule], checks_comments: false,
+        create: forbidden_raise,
+    },
 ];
 
 fn no_relative_imports(options: &RuleOptions) -> Result<Box<dyn LintRule>> {
@@ -84,9 +102,11 @@ fn no_underscore_import_aliases(options: &RuleOptions) -> Result<Box<dyn LintRul
 
 #[derive(Debug)]
 enum Policy {
-    Calls(Vec<Entry>),
-    Imports(Vec<Entry>),
+    Calls(Vec<CallEntry>),
+    Imports(Vec<ImportEntry>),
     Names(Vec<NameEntry>),
+    Attributes(Vec<AttributeEntry>),
+    Raises(Vec<RaiseEntry>),
     Contracts(ContractOptions),
     Lines(LineOptions),
     Relative,
@@ -95,34 +115,74 @@ enum Policy {
 }
 
 #[derive(Debug)]
-struct Entry {
+struct CallEntry {
     symbol: String,
-    message: Option<String>,
-    replacement: Option<String>,
+    advice: Advice,
+    scope: PathScope,
+    filter: ContextFilter,
+    require_keywords: Vec<String>,
+    forbid_keywords: Vec<String>,
+}
+
+#[derive(Debug)]
+struct ImportEntry {
+    module: String,
+    names: Vec<Regex>,
+    advice: Advice,
+    scope: PathScope,
 }
 
 #[derive(Debug)]
 struct NameEntry {
     kind: String,
-    pattern: String,
     matcher: Regex,
-    message: Option<String>,
+    advice: Advice,
+    scope: PathScope,
+}
+
+#[derive(Debug)]
+struct AttributeEntry {
+    attribute: Option<Regex>,
+    receiver: Option<Regex>,
+    qualified_prefix: Option<String>,
+    calls_only: bool,
+    ignore_writes: bool,
+    advice: Advice,
+    scope: PathScope,
+}
+
+#[derive(Debug)]
+struct RaiseEntry {
+    exception: Regex,
+    advice: Advice,
+    scope: PathScope,
+    filter: ContextFilter,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct CallOptions {
-    forbidden_calls: Vec<String>,
+    forbidden_calls: Vec<Shorthand<CallTable>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct ImportOptions {
-    forbidden_imports: Vec<String>,
+    forbidden_imports: Vec<Shorthand<ImportTable>>,
 }
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct NameOptions {
-    forbidden_names: Vec<String>,
+    forbidden_names: Vec<Shorthand<NameTable>>,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct AttributeOptions {
+    forbidden_attributes: Vec<Shorthand<AttributeTable>>,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct RaiseOptions {
+    forbidden_raises: Vec<Shorthand<RaiseTable>>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -137,93 +197,406 @@ impl Default for TempOptions {
     }
 }
 
-fn optional(text: &str) -> Option<String> {
-    let text = text.trim();
-    (!text.is_empty()).then(|| text.to_owned())
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CallTable {
+    symbol: String,
+    message: Option<String>,
+    replacement: Option<String>,
+    #[serde(default)]
+    include: Vec<String>,
+    #[serde(default)]
+    exclude: Vec<String>,
+    in_async: Option<bool>,
+    #[serde(default)]
+    decorators: Vec<String>,
+    #[serde(default)]
+    require_keywords: Vec<String>,
+    #[serde(default)]
+    forbid_keywords: Vec<String>,
+}
+impl CallTable {
+    fn same_selector(&self, other: &Self) -> bool {
+        self.symbol == other.symbol
+            && self.include == other.include
+            && self.exclude == other.exclude
+            && self.in_async == other.in_async
+            && self.decorators == other.decorators
+            && self.require_keywords == other.require_keywords
+            && self.forbid_keywords == other.forbid_keywords
+    }
 }
 
-fn entries(values: Vec<String>, count: usize, ascii: bool) -> Result<Vec<Entry>> {
-    let ascii_symbol = Regex::new(r"\A[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\z")?;
-    let mut entries: Vec<Entry> = Vec::new();
-    for value in values {
-        let fields: Vec<_> = value.splitn(count, '|').collect();
-        let symbol = fields[0];
-        let replacement = fields.get(2).and_then(|text| optional(text));
-        if !(if ascii {
-            ascii_symbol.is_match(symbol)
-        } else {
-            module_identifier(symbol)
-        }) || replacement
-            .as_ref()
-            .is_some_and(|value| !ascii_symbol.is_match(value))
-        {
-            bail!("invalid policy entry: {value:?}");
-        }
-        let entry = Entry {
-            symbol: symbol.to_owned(),
-            message: fields.get(1).and_then(|text| optional(text)),
-            replacement,
-        };
-        if let Some(previous) = entries.iter_mut().find(|entry| entry.symbol == symbol) {
-            *previous = entry;
-        } else {
-            entries.push(entry);
-        }
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImportTable {
+    module: String,
+    #[serde(default)]
+    names: Vec<String>,
+    message: Option<String>,
+    replacement: Option<String>,
+    #[serde(default)]
+    include: Vec<String>,
+    #[serde(default)]
+    exclude: Vec<String>,
+}
+impl ImportTable {
+    fn same_selector(&self, other: &Self) -> bool {
+        self.module == other.module
+            && self.names == other.names
+            && self.include == other.include
+            && self.exclude == other.exclude
     }
-    Ok(entries)
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NameTable {
+    kind: String,
+    pattern: String,
+    message: Option<String>,
+    replacement: Option<String>,
+    #[serde(default)]
+    include: Vec<String>,
+    #[serde(default)]
+    exclude: Vec<String>,
+}
+impl NameTable {
+    fn same_selector(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.pattern == other.pattern
+            && self.include == other.include
+            && self.exclude == other.exclude
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttributeTable {
+    attribute: Option<String>,
+    receiver: Option<String>,
+    qualified_prefix: Option<String>,
+    #[serde(default)]
+    calls_only: bool,
+    #[serde(default)]
+    ignore_writes: bool,
+    message: Option<String>,
+    replacement: Option<String>,
+    #[serde(default)]
+    include: Vec<String>,
+    #[serde(default)]
+    exclude: Vec<String>,
+}
+impl AttributeTable {
+    fn same_selector(&self, other: &Self) -> bool {
+        self.attribute == other.attribute
+            && self.receiver == other.receiver
+            && self.qualified_prefix == other.qualified_prefix
+            && self.calls_only == other.calls_only
+            && self.ignore_writes == other.ignore_writes
+            && self.include == other.include
+            && self.exclude == other.exclude
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RaiseTable {
+    exception: String,
+    message: Option<String>,
+    replacement: Option<String>,
+    #[serde(default)]
+    include: Vec<String>,
+    #[serde(default)]
+    exclude: Vec<String>,
+    in_async: Option<bool>,
+    #[serde(default)]
+    decorators: Vec<String>,
+}
+impl RaiseTable {
+    fn same_selector(&self, other: &Self) -> bool {
+        self.exception == other.exception
+            && self.include == other.include
+            && self.exclude == other.exclude
+            && self.in_async == other.in_async
+            && self.decorators == other.decorators
+    }
+}
+
+fn ascii_symbol(value: &str) -> bool {
+    static SYMBOL: OnceLock<Result<Regex, regex::Error>> = OnceLock::new();
+    SYMBOL
+        .get_or_init(|| Regex::new(r"\A[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\z"))
+        .as_ref()
+        .is_ok_and(|matcher| matcher.is_match(value))
+}
+
+fn replacement(value: Option<&str>, valid: fn(&str) -> bool) -> Result<Option<String>> {
+    let replacement = optional(value);
+    if let Some(replacement) = &replacement
+        && !valid(replacement)
+    {
+        bail!("invalid replacement: {replacement:?}");
+    }
+    Ok(replacement)
+}
+
+fn identifiers(values: &[String], what: &str) -> Result<()> {
+    if let Some(value) = values.iter().find(|value| !identifier(value)) {
+        bail!("invalid {what}: {value:?}");
+    }
+    Ok(())
 }
 
 fn forbidden_call(options: &RuleOptions) -> Result<Box<dyn LintRule>> {
     let options: CallOptions = parse_options(options)?;
-    Ok(Box::new(Policy::Calls(entries(
-        options.forbidden_calls,
-        3,
-        true,
-    )?)))
+    let tables = options
+        .forbidden_calls
+        .into_iter()
+        .map(|entry| match entry {
+            Shorthand::Table(table) => table,
+            Shorthand::Text(text) => {
+                let mut fields = text.splitn(3, '|');
+                CallTable {
+                    symbol: fields.next().unwrap_or_default().to_owned(),
+                    message: fields.next().map(str::to_owned),
+                    replacement: fields.next().map(str::to_owned),
+                    ..CallTable::default()
+                }
+            }
+        })
+        .collect();
+    let entries = dedup_by(tables, CallTable::same_selector)
+        .into_iter()
+        .map(|table| {
+            if !ascii_symbol(&table.symbol) {
+                bail!("invalid forbidden call symbol: {:?}", table.symbol);
+            }
+            identifiers(&table.require_keywords, "required keyword")?;
+            identifiers(&table.forbid_keywords, "forbidden keyword")?;
+            Ok(CallEntry {
+                advice: Advice::new(
+                    table.message.as_deref(),
+                    replacement(table.replacement.as_deref(), ascii_symbol)?,
+                ),
+                scope: PathScope::new(&table.include, &table.exclude)?,
+                filter: ContextFilter::new(table.in_async, &table.decorators)?,
+                symbol: table.symbol,
+                require_keywords: table.require_keywords,
+                forbid_keywords: table.forbid_keywords,
+            })
+        })
+        .collect::<Result<_>>()?;
+    Ok(Box::new(Policy::Calls(entries)))
 }
 fn forbidden_import(options: &RuleOptions) -> Result<Box<dyn LintRule>> {
     let options: ImportOptions = parse_options(options)?;
-    let mut entries = entries(options.forbidden_imports, 2, false)?;
+    let tables = options
+        .forbidden_imports
+        .into_iter()
+        .map(|entry| match entry {
+            Shorthand::Table(table) => table,
+            Shorthand::Text(text) => {
+                let (module, message) = text
+                    .split_once('|')
+                    .map_or((text.as_str(), None), |(module, message)| {
+                        (module, Some(message.to_owned()))
+                    });
+                ImportTable {
+                    module: module.to_owned(),
+                    message,
+                    ..ImportTable::default()
+                }
+            }
+        })
+        .collect();
+    let mut entries = dedup_by(tables, ImportTable::same_selector)
+        .into_iter()
+        .map(|table| {
+            if !module_identifier(&table.module) {
+                bail!("invalid forbidden import module: {:?}", table.module);
+            }
+            Ok(ImportEntry {
+                names: table
+                    .names
+                    .iter()
+                    .map(|pattern| identifier_pattern(pattern))
+                    .collect::<Result<_>>()?,
+                advice: Advice::new(
+                    table.message.as_deref(),
+                    replacement(table.replacement.as_deref(), module_identifier)?,
+                ),
+                scope: PathScope::new(&table.include, &table.exclude)?,
+                module: table.module,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    // The most specific boundary decides the message; name filters narrow a module boundary.
     entries.sort_by_key(|entry| {
         std::cmp::Reverse((
-            entry.symbol.matches('.').count(),
-            entry.symbol.chars().count(),
+            entry.module.matches('.').count(),
+            entry.module.chars().count(),
+            !entry.names.is_empty(),
         ))
     });
     Ok(Box::new(Policy::Imports(entries)))
 }
+const NAME_KINDS: &[&str] = &[
+    "any",
+    "variable",
+    "parameter",
+    "function",
+    "class",
+    "attribute",
+    "import",
+    "alias",
+];
 fn forbidden_name(options: &RuleOptions) -> Result<Box<dyn LintRule>> {
     let options: NameOptions = parse_options(options)?;
-    let syntax = Regex::new(
-        r"\A(any|variable|parameter|function|class|attribute|import|alias):([A-Za-z_*?\[\]!][A-Za-z0-9_*?\[\]!-]*)\z",
-    )?;
-    let mut entries: Vec<NameEntry> = Vec::new();
-    for value in options.forbidden_names {
-        let (rule, message) = value
-            .split_once('|')
-            .map_or((value.as_str(), None), |(rule, message)| {
-                (rule, optional(message))
-            });
-        let Some(captures) = syntax.captures(rule) else {
-            bail!("invalid forbidden name entry: {value:?}");
-        };
-        let kind = captures[1].to_owned();
-        let pattern = captures[2].to_owned();
-        if let Some(previous) = entries
-            .iter_mut()
-            .find(|entry| entry.kind == kind && entry.pattern == pattern)
-        {
-            previous.message = message;
-        } else {
-            entries.push(NameEntry {
-                kind,
-                matcher: shell_pattern(&pattern)?,
-                pattern,
-                message,
-            });
-        }
-    }
+    let pattern_syntax = Regex::new(r"\A[A-Za-z_*?\[\]!][A-Za-z0-9_*?\[\]!-]*\z")?;
+    let tables = options
+        .forbidden_names
+        .into_iter()
+        .map(|entry| match entry {
+            Shorthand::Table(table) => Ok(table),
+            Shorthand::Text(text) => {
+                let (rule, message) = text
+                    .split_once('|')
+                    .map_or((text.as_str(), None), |(rule, message)| {
+                        (rule, Some(message.to_owned()))
+                    });
+                let Some((kind, pattern)) = rule.split_once(':') else {
+                    bail!("invalid forbidden name entry: {text:?}");
+                };
+                Ok(NameTable {
+                    kind: kind.to_owned(),
+                    pattern: pattern.to_owned(),
+                    message,
+                    ..NameTable::default()
+                })
+            }
+        })
+        .collect::<Result<_>>()?;
+    let entries = dedup_by(tables, NameTable::same_selector)
+        .into_iter()
+        .map(|table| {
+            if !NAME_KINDS.contains(&table.kind.as_str())
+                || !pattern_syntax.is_match(&table.pattern)
+            {
+                bail!(
+                    "invalid forbidden name entry: {}:{}",
+                    table.kind,
+                    table.pattern
+                );
+            }
+            Ok(NameEntry {
+                matcher: shell_pattern(&table.pattern)?,
+                advice: Advice::new(
+                    table.message.as_deref(),
+                    replacement(table.replacement.as_deref(), identifier)?,
+                ),
+                scope: PathScope::new(&table.include, &table.exclude)?,
+                kind: table.kind,
+            })
+        })
+        .collect::<Result<_>>()?;
     Ok(Box::new(Policy::Names(entries)))
+}
+fn forbidden_attribute(options: &RuleOptions) -> Result<Box<dyn LintRule>> {
+    let options: AttributeOptions = parse_options(options)?;
+    let tables = options
+        .forbidden_attributes
+        .into_iter()
+        .map(|entry| match entry {
+            Shorthand::Table(table) => table,
+            Shorthand::Text(text) => {
+                let (pattern, message) = text
+                    .split_once('|')
+                    .map_or((text.as_str(), None), |(pattern, message)| {
+                        (pattern, Some(message.to_owned()))
+                    });
+                // `*.name` places no constraint on the receiver.
+                let (receiver, attribute) = match pattern.rsplit_once('.') {
+                    Some(("*", attribute)) => (None, attribute),
+                    Some((receiver, attribute)) => (Some(receiver.to_owned()), attribute),
+                    None => (None, pattern),
+                };
+                AttributeTable {
+                    attribute: Some(attribute.to_owned()),
+                    receiver,
+                    message,
+                    ..AttributeTable::default()
+                }
+            }
+        })
+        .collect();
+    let entries = dedup_by(tables, AttributeTable::same_selector)
+        .into_iter()
+        .map(|table| {
+            if table.attribute.is_none() && table.qualified_prefix.is_none() {
+                bail!("forbidden attribute entries need `attribute` or `qualified_prefix`");
+            }
+            if let Some(prefix) = &table.qualified_prefix
+                && !module_identifier(prefix)
+            {
+                bail!("invalid qualified prefix: {prefix:?}");
+            }
+            Ok(AttributeEntry {
+                attribute: table
+                    .attribute
+                    .as_deref()
+                    .map(identifier_pattern)
+                    .transpose()?,
+                receiver: table.receiver.as_deref().map(dotted_pattern).transpose()?,
+                qualified_prefix: table.qualified_prefix,
+                calls_only: table.calls_only,
+                ignore_writes: table.ignore_writes,
+                advice: Advice::new(
+                    table.message.as_deref(),
+                    replacement(table.replacement.as_deref(), module_identifier)?,
+                ),
+                scope: PathScope::new(&table.include, &table.exclude)?,
+            })
+        })
+        .collect::<Result<_>>()?;
+    Ok(Box::new(Policy::Attributes(entries)))
+}
+fn forbidden_raise(options: &RuleOptions) -> Result<Box<dyn LintRule>> {
+    let options: RaiseOptions = parse_options(options)?;
+    let tables = options
+        .forbidden_raises
+        .into_iter()
+        .map(|entry| match entry {
+            Shorthand::Table(table) => table,
+            Shorthand::Text(text) => {
+                let (exception, message) = text
+                    .split_once('|')
+                    .map_or((text.as_str(), None), |(exception, message)| {
+                        (exception, Some(message.to_owned()))
+                    });
+                RaiseTable {
+                    exception: exception.to_owned(),
+                    message,
+                    ..RaiseTable::default()
+                }
+            }
+        })
+        .collect();
+    let entries = dedup_by(tables, RaiseTable::same_selector)
+        .into_iter()
+        .map(|table| {
+            Ok(RaiseEntry {
+                exception: dotted_pattern(&table.exception)?,
+                advice: Advice::new(
+                    table.message.as_deref(),
+                    replacement(table.replacement.as_deref(), module_identifier)?,
+                ),
+                scope: PathScope::new(&table.include, &table.exclude)?,
+                filter: ContextFilter::new(table.in_async, &table.decorators)?,
+            })
+        })
+        .collect::<Result<_>>()?;
+    Ok(Box::new(Policy::Raises(entries)))
 }
 fn tempfile(options: &RuleOptions) -> Result<Box<dyn LintRule>> {
     Ok(Box::new(Policy::Tempfile(parse_options(options)?)))
@@ -718,11 +1091,27 @@ impl LineOptions {
     }
 }
 
+impl Policy {
+    fn scopes(&self) -> Option<Vec<&PathScope>> {
+        Some(match self {
+            Self::Calls(entries) => entries.iter().map(|entry| &entry.scope).collect(),
+            Self::Imports(entries) => entries.iter().map(|entry| &entry.scope).collect(),
+            Self::Names(entries) => entries.iter().map(|entry| &entry.scope).collect(),
+            Self::Attributes(entries) => entries.iter().map(|entry| &entry.scope).collect(),
+            Self::Raises(entries) => entries.iter().map(|entry| &entry.scope).collect(),
+            _ => return None,
+        })
+    }
+}
+
 impl LintRule for Policy {
     fn is_enabled(&self) -> bool {
         match self {
-            Self::Calls(entries) | Self::Imports(entries) => !entries.is_empty(),
+            Self::Calls(entries) => !entries.is_empty(),
+            Self::Imports(entries) => !entries.is_empty(),
             Self::Names(entries) => !entries.is_empty(),
+            Self::Attributes(entries) => !entries.is_empty(),
+            Self::Raises(entries) => !entries.is_empty(),
             Self::Contracts(options) => !options.contracts.is_empty(),
             Self::Lines(options) => {
                 options.base.file > 0
@@ -755,6 +1144,19 @@ impl LintRule for Policy {
                 return;
             }
         }
+        let path = if let Some(scopes) = self.scopes() {
+            let path = if scopes.iter().all(|scope| scope.is_unrestricted()) {
+                None
+            } else {
+                relative_path(context)
+            };
+            if !scopes.iter().any(|scope| scope.allows(path.as_deref())) {
+                return;
+            }
+            path
+        } else {
+            None
+        };
         let identity = if let Self::Contracts(options) = self {
             module_identity(context, &options.source_roots)
         } else {
@@ -786,6 +1188,7 @@ impl LintRule for Policy {
             identity,
             limits,
             type_only: Vec::new(),
+            path,
         };
         AnyNodeRef::ModModule(module).visit_source_order(&mut visitor);
     }
@@ -858,6 +1261,7 @@ struct PolicyVisitor<'rule, 'ctx, 'ast, 'src> {
     identity: Option<(String, String)>,
     limits: Limits,
     type_only: Vec<TextRange>,
+    path: Option<String>,
 }
 impl PolicyVisitor<'_, '_, '_, '_> {
     fn report_name(&mut self, name: &str, range: TextRange, kind: &str) {
@@ -865,15 +1269,16 @@ impl PolicyVisitor<'_, '_, '_, '_> {
             return;
         };
         if let Some(entry) = entries.iter().find(|entry| {
-            (entry.kind == kind || entry.kind == "any") && entry.matcher.is_match(name)
+            (entry.kind == kind || entry.kind == "any")
+                && entry.matcher.is_match(name)
+                && entry.scope.allows(self.path.as_deref())
         }) {
             self.findings.push(Finding::new(
                 "forbidden-name",
                 range,
                 entry
-                    .message
-                    .clone()
-                    .unwrap_or_else(|| format!("Do not use forbidden {kind} name '{name}'.")),
+                    .advice
+                    .render(|| format!("Do not use forbidden {kind} name '{name}'.")),
             ));
         }
     }
@@ -898,42 +1303,13 @@ impl PolicyVisitor<'_, '_, '_, '_> {
             }
         }
     }
-    fn import(&mut self, alias: &ast::Alias, target: &str, level: u32) {
+    fn import(&mut self, alias: &ast::Alias, module: &str, name: Option<&str>, level: u32) {
+        let target = match name {
+            None | Some("*") => module.to_owned(),
+            Some(name) => join(module, name),
+        };
         if let Policy::Imports(entries) = self.policy {
-            let candidates = if level == 0 {
-                vec![target.to_owned()]
-            } else {
-                let mut parts: Vec<_> = self
-                    .context
-                    .path
-                    .parent()
-                    .into_iter()
-                    .flat_map(Path::components)
-                    .map(|part| part.as_os_str().to_string_lossy().into_owned())
-                    .collect();
-                parts.truncate(parts.len().saturating_sub(level.saturating_sub(1) as usize));
-                let count = parts.len();
-                if !target.is_empty() {
-                    parts.extend(target.split('.').map(str::to_owned));
-                }
-                (0..count).map(|index| parts[index..].join(".")).collect()
-            };
-            if let Some(entry) = entries.iter().find(|entry| {
-                candidates
-                    .iter()
-                    .any(|candidate| boundary(candidate, &entry.symbol))
-            }) {
-                self.findings.push(Finding::new(
-                    "forbidden-import",
-                    alias.range(),
-                    entry.message.clone().unwrap_or_else(|| {
-                        format!(
-                            "Do not import across forbidden boundary '{}'.",
-                            entry.symbol
-                        )
-                    }),
-                ));
-            }
+            self.forbidden_import(entries, alias, module, name, level);
         }
         if let Policy::Contracts(options) = self.policy {
             let Some((source, package)) = &self.identity else {
@@ -948,13 +1324,13 @@ impl PolicyVisitor<'_, '_, '_, '_> {
                 return;
             }
             let target = if level == 0 {
-                target.to_owned()
+                target
             } else {
                 let parts: Vec<_> = package.split('.').filter(|part| !part.is_empty()).collect();
                 if level as usize > parts.len() {
                     return;
                 }
-                join(&parts[..=(parts.len() - level as usize)].join("."), target)
+                join(&parts[..=(parts.len() - level as usize)].join("."), &target)
             };
             for contract in &options.contracts {
                 if contract.breaks(source, &target) {
@@ -971,6 +1347,67 @@ impl PolicyVisitor<'_, '_, '_, '_> {
                 }
             }
         }
+    }
+    fn forbidden_import(
+        &mut self,
+        entries: &[ImportEntry],
+        alias: &ast::Alias,
+        module: &str,
+        name: Option<&str>,
+        level: u32,
+    ) {
+        let modules = if level == 0 {
+            vec![module.to_owned()]
+        } else {
+            let mut parts: Vec<_> = self
+                .context
+                .path
+                .parent()
+                .into_iter()
+                .flat_map(Path::components)
+                .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            parts.truncate(parts.len().saturating_sub(level.saturating_sub(1) as usize));
+            let count = parts.len();
+            if !module.is_empty() {
+                parts.extend(module.split('.').map(str::to_owned));
+            }
+            (0..count).map(|index| parts[index..].join(".")).collect()
+        };
+        let Some(entry) = entries.iter().find(|entry| {
+            let imported = if entry.names.is_empty() {
+                modules.iter().any(|module| {
+                    let target = match name {
+                        None | Some("*") => module.clone(),
+                        Some(name) => join(module, name),
+                    };
+                    boundary(&target, &entry.module)
+                })
+            } else {
+                // Name filters apply to `from module import name`, including star imports.
+                name.is_some_and(|name| {
+                    (name == "*" || entry.names.iter().any(|pattern| pattern.is_match(name)))
+                        && modules.contains(&entry.module)
+                })
+            };
+            imported && entry.scope.allows(self.path.as_deref())
+        }) else {
+            return;
+        };
+        let message = entry.advice.render(|| match name {
+            Some(name) if !entry.names.is_empty() => {
+                format!(
+                    "Do not import forbidden name '{name}' from '{}'.",
+                    entry.module
+                )
+            }
+            _ => format!(
+                "Do not import across forbidden boundary '{}'.",
+                entry.module
+            ),
+        });
+        self.findings
+            .push(Finding::new("forbidden-import", alias.range(), message));
     }
     fn runtime_truth(&self, expression: &Expr) -> Option<bool> {
         if self
@@ -1040,42 +1477,46 @@ impl PolicyVisitor<'_, '_, '_, '_> {
             Policy::Calls(entries) => {
                 let dotted = dotted(&call.func);
                 let known_local = bindings::is_local(self.context, &call.func);
+                let canonical = |entry: &CallEntry| {
+                    symbol
+                        .as_ref()
+                        .is_some_and(|symbol| symbol == &entry.symbol)
+                };
+                let plain = |entry: &CallEntry| {
+                    (!known_local
+                        && dotted.as_ref().is_some_and(|name| {
+                            *name == entry.symbol && (symbol.is_none() || !name.contains('.'))
+                        }))
+                        || (symbol.is_none()
+                            && !known_local
+                            && matches!(call.func.as_ref(), Expr::Name(_))
+                            && bindings::star_matches(
+                                self.context,
+                                &entry.symbol,
+                                dotted.as_deref().unwrap_or(""),
+                                &call.func,
+                            ))
+                };
                 // Canonical provenance wins over any earlier plain-name fallback.
-                let entry = entries
+                let reported = entries
                     .iter()
-                    .find(|entry| {
-                        symbol
-                            .as_ref()
-                            .is_some_and(|symbol| symbol == &entry.symbol)
-                    })
-                    .or_else(|| {
-                        entries.iter().find(|entry| {
-                            (!known_local
-                                && dotted.as_ref().is_some_and(|name| {
-                                    *name == entry.symbol
-                                        && (symbol.is_none() || !name.contains('.'))
-                                }))
-                                || (symbol.is_none()
-                                    && !known_local
-                                    && matches!(call.func.as_ref(), Expr::Name(_))
-                                    && bindings::star_matches(
-                                        self.context,
-                                        &entry.symbol,
-                                        dotted.as_deref().unwrap_or(""),
-                                        &call.func,
-                                    ))
-                        })
+                    .filter(|entry| canonical(entry))
+                    .chain(entries.iter().filter(|entry| plain(entry)))
+                    .find_map(|entry| Some((entry, self.call_violation(entry, call)?)));
+                if let Some((entry, violation)) = reported {
+                    let message = entry.advice.render(|| match violation {
+                        CallViolation::Call => {
+                            format!("Do not call forbidden callable '{}'.", entry.symbol)
+                        }
+                        CallViolation::MissingKeyword(keyword) => format!(
+                            "Call to '{}' must pass keyword argument '{keyword}'.",
+                            entry.symbol
+                        ),
+                        CallViolation::ForbiddenKeyword(keyword) => format!(
+                            "Call to '{}' must not pass keyword argument '{keyword}'.",
+                            entry.symbol
+                        ),
                     });
-                if let Some(entry) = entry {
-                    let mut message = entry.message.clone().unwrap_or_else(|| {
-                        format!("Do not call forbidden callable '{}'.", entry.symbol)
-                    });
-                    if let Some(replacement) = &entry.replacement {
-                        message.push_str(" Use instead: ");
-                        message.push_str(replacement);
-                        message.push('.');
-                    }
-                    // A recommendation need not accept the same arguments or preserve semantics.
                     self.findings
                         .push(Finding::new("forbidden-call", call.func.range(), message));
                 }
@@ -1106,6 +1547,144 @@ impl PolicyVisitor<'_, '_, '_, '_> {
             }
             _ => {}
         }
+    }
+    fn call_violation<'entry>(
+        &self,
+        entry: &'entry CallEntry,
+        call: &ast::ExprCall,
+    ) -> Option<CallViolation<'entry>> {
+        if !entry.scope.allows(self.path.as_deref())
+            || !entry
+                .filter
+                .allows(self.context, &self.ancestors, call.range())
+        {
+            return None;
+        }
+        if entry.require_keywords.is_empty() && entry.forbid_keywords.is_empty() {
+            return Some(CallViolation::Call);
+        }
+        let keywords = &call.arguments.keywords;
+        let passed = |name: &str| {
+            keywords
+                .iter()
+                .any(|keyword| keyword.arg.as_ref().is_some_and(|arg| arg.as_str() == name))
+        };
+        if let Some(keyword) = entry.forbid_keywords.iter().find(|name| passed(name)) {
+            return Some(CallViolation::ForbiddenKeyword(keyword));
+        }
+        // `**options` may supply any keyword, so a required keyword cannot be proven missing.
+        if keywords.iter().any(|keyword| keyword.arg.is_none()) {
+            return None;
+        }
+        entry
+            .require_keywords
+            .iter()
+            .find(|name| !passed(name))
+            .map(|keyword| CallViolation::MissingKeyword(keyword))
+    }
+    fn attribute(&mut self, attribute: &ast::ExprAttribute) {
+        let Policy::Attributes(entries) = self.policy else {
+            return;
+        };
+        let called = matches!(self.ancestors.last(), Some(AnyNodeRef::ExprCall(call)) if call.func.range() == attribute.range());
+        let qualified = || {
+            super::typing::resolve(self.context, &attribute.value, &[])
+                .map(|receiver| join(&receiver, attribute.attr.as_str()))
+        };
+        let receiver = dotted(&attribute.value);
+        let Some(entry) = entries.iter().find(|entry| {
+            (!entry.calls_only || called)
+                && entry
+                    .attribute
+                    .as_ref()
+                    .is_none_or(|pattern| pattern.is_match(attribute.attr.as_str()))
+                && entry.receiver.as_ref().is_none_or(|pattern| {
+                    receiver
+                        .as_ref()
+                        .is_some_and(|receiver| pattern.is_match(receiver))
+                })
+                && entry.qualified_prefix.as_ref().is_none_or(|prefix| {
+                    // Report only the innermost access, not every longer chain such as
+                    // `os.environ.get` that extends an already reported `os.environ`.
+                    qualified().is_some_and(|qualified| boundary(&qualified, prefix))
+                        && !matches!(attribute.value.as_ref(), Expr::Attribute(_)
+                            if super::typing::resolve(self.context, &attribute.value, &[])
+                                .is_some_and(|value| boundary(&value, prefix)))
+                })
+                && !(entry.ignore_writes && self.is_write_target(attribute))
+                && entry.scope.allows(self.path.as_deref())
+        }) else {
+            return;
+        };
+        let display = receiver.map_or_else(
+            || attribute.attr.to_string(),
+            |receiver| join(&receiver, attribute.attr.as_str()),
+        );
+        let message = entry
+            .advice
+            .render(|| format!("Do not use forbidden attribute '{display}'."));
+        self.findings.push(Finding::new(
+            "forbidden-attribute",
+            attribute.range(),
+            message,
+        ));
+    }
+    fn is_write_target(&self, attribute: &ast::ExprAttribute) -> bool {
+        let mut current = attribute.range();
+        let mut context = attribute.ctx;
+        // `request.state.user = value` writes through `request.state`.
+        for parent in self.ancestors.iter().rev() {
+            match parent {
+                AnyNodeRef::ExprAttribute(parent) if parent.value.range() == current => {
+                    current = parent.range();
+                    context = parent.ctx;
+                }
+                AnyNodeRef::ExprSubscript(parent) if parent.value.range() == current => {
+                    current = parent.range();
+                    context = parent.ctx;
+                }
+                _ => break,
+            }
+        }
+        matches!(context, ast::ExprContext::Store | ast::ExprContext::Del)
+    }
+    fn raise(&mut self, statement: &ast::StmtRaise) {
+        let Policy::Raises(entries) = self.policy else {
+            return;
+        };
+        let Some(exception) = &statement.exc else {
+            return;
+        };
+        let exception = match exception.as_ref() {
+            Expr::Call(call) => call.func.as_ref(),
+            exception => exception,
+        };
+        let qualified = super::typing::resolve(self.context, exception, &[]);
+        let plain = dotted(exception).filter(|name| {
+            (qualified.is_none() || !name.contains('.'))
+                && !bindings::is_local(self.context, exception)
+        });
+        let Some(entry) = entries.iter().find(|entry| {
+            qualified
+                .iter()
+                .chain(&plain)
+                .any(|name| entry.exception.is_match(name))
+                && entry.scope.allows(self.path.as_deref())
+                && entry
+                    .filter
+                    .allows(self.context, &self.ancestors, statement.range())
+        }) else {
+            return;
+        };
+        let display = qualified
+            .as_ref()
+            .or(plain.as_ref())
+            .map_or("", String::as_str);
+        let message = entry
+            .advice
+            .render(|| format!("Do not raise forbidden exception '{display}'."));
+        self.findings
+            .push(Finding::new("forbidden-raise", exception.range(), message));
     }
     fn function_lines(&mut self, function: &ast::StmtFunctionDef) {
         if !matches!(self.policy, Policy::Lines(_)) {
@@ -1154,6 +1733,13 @@ impl PolicyVisitor<'_, '_, '_, '_> {
         }
     }
 }
+#[derive(Clone, Copy)]
+enum CallViolation<'entry> {
+    Call,
+    MissingKeyword(&'entry str),
+    ForbiddenKeyword(&'entry str),
+}
+
 fn dotted(expression: &Expr) -> Option<String> {
     match expression {
         Expr::Name(name) => Some(name.id.to_string()),
@@ -1181,7 +1767,9 @@ impl<'ast> SourceOrderVisitor<'ast> for PolicyVisitor<'_, '_, 'ast, '_> {
             }
             AnyNodeRef::ExprAttribute(attribute) => {
                 self.report_name(attribute.attr.as_str(), attribute.attr.range(), "attribute");
+                self.attribute(attribute);
             }
+            AnyNodeRef::StmtRaise(statement) => self.raise(statement),
             AnyNodeRef::PatternMatchAs(pattern) => {
                 if let Some(name) = &pattern.name {
                     self.report_name(name.as_str(), name.range(), "variable");
@@ -1204,7 +1792,7 @@ impl<'ast> SourceOrderVisitor<'ast> for PolicyVisitor<'_, '_, 'ast, '_> {
             }
             AnyNodeRef::StmtImport(statement) => {
                 for alias in &statement.names {
-                    self.import(alias, alias.name.as_str(), 0);
+                    self.import(alias, alias.name.as_str(), None, 0);
                 }
             }
             AnyNodeRef::StmtImportFrom(statement) => {
@@ -1223,12 +1811,7 @@ impl<'ast> SourceOrderVisitor<'ast> for PolicyVisitor<'_, '_, 'ast, '_> {
                     .as_ref()
                     .map_or("", ast::Identifier::as_str);
                 for alias in &statement.names {
-                    let target = if alias.name.as_str() == "*" {
-                        module.to_owned()
-                    } else {
-                        join(module, alias.name.as_str())
-                    };
-                    self.import(alias, &target, statement.level);
+                    self.import(alias, module, Some(alias.name.as_str()), statement.level);
                 }
             }
             AnyNodeRef::Alias(alias) => {
@@ -1627,5 +2210,585 @@ mod tests {
         let source = "first(); second()";
         // Also check the range primitive used when the first line has no terminator.
         assert_eq!(&source[source.full_line_range(TextSize::ZERO)], source);
+    }
+
+    fn messages(name: &str, source: &str, path: &str, settings: &str) -> Vec<String> {
+        check_path(name, source, path, "/repo", settings)
+            .into_iter()
+            .map(|finding| finding.message)
+            .collect()
+    }
+    fn create(name: &str, settings: &str) -> Result<Box<dyn LintRule>> {
+        let definition = RULES.iter().find(|rule| rule.name == name).unwrap();
+        (definition.create)(&options(settings))
+    }
+    fn error(name: &str, settings: &str) -> String {
+        format!("{:#}", create(name, settings).unwrap_err())
+    }
+
+    #[test]
+    fn structured_entries_match_their_shorthand() {
+        let source = "import legacy\nlegacy.run('x')\n";
+        let expected = vec!["Avoid it. Use instead: modern.run.".to_owned()];
+        for settings in [
+            "forbidden_calls = ['legacy.run|Avoid it.|modern.run']",
+            "forbidden_calls = [{symbol = 'legacy.run', message = 'Avoid it.', replacement = 'modern.run'}]",
+            "[[forbidden_calls]]\nsymbol = 'legacy.run'\nmessage = 'Avoid it.'\nreplacement = 'modern.run'",
+        ] {
+            assert_eq!(
+                messages("forbidden-call", source, "/repo/a.py", settings),
+                expected,
+                "{settings}"
+            );
+        }
+        assert_eq!(
+            messages(
+                "forbidden-import",
+                "import legacy.core\n",
+                "/repo/a.py",
+                "forbidden_imports = ['other', {module = 'legacy', replacement = 'modern'}]"
+            ),
+            ["Do not import across forbidden boundary 'legacy'. Use instead: modern."]
+        );
+        assert_eq!(
+            messages(
+                "forbidden-name",
+                "class UserManager: ...\n",
+                "/repo/a.py",
+                "forbidden_names = [{kind = 'class', pattern = '*Manager', message = 'Name the role.'}]"
+            ),
+            ["Name the role."]
+        );
+    }
+
+    #[test]
+    fn later_entries_replace_earlier_entries_with_the_same_selector() {
+        let source = "import legacy\nlegacy.run('x')\n";
+        assert_eq!(
+            messages(
+                "forbidden-call",
+                source,
+                "/repo/a.py",
+                "forbidden_calls = ['legacy.run|first', {symbol = 'legacy.run', message = 'second'}]"
+            ),
+            ["second"]
+        );
+        // A scoped entry selects different files, so it does not replace the global entry.
+        assert_eq!(
+            messages(
+                "forbidden-call",
+                source,
+                "/repo/a.py",
+                "forbidden_calls = ['legacy.run|global', {symbol = 'legacy.run', message = 'scoped', include = ['src']}]"
+            ),
+            ["global"]
+        );
+    }
+
+    #[test]
+    fn include_and_exclude_globs_are_relative_to_the_config_root() {
+        let source = "import legacy\nlegacy.run('x')\n";
+        let scoped = |scope: &str, path: &str| {
+            !check_path(
+                "forbidden-call",
+                source,
+                path,
+                "/repo",
+                &format!("forbidden_calls = [{{symbol = 'legacy.run', {scope}}}]"),
+            )
+            .is_empty()
+        };
+        for (scope, path, expected) in [
+            ("include = ['src/**']", "/repo/src/pkg/deep/a.py", true),
+            ("include = ['src/**']", "/repo/tests/a.py", false),
+            ("include = ['src/**']", "/repo/vendor/src/a.py", false),
+            ("include = ['src/*.py']", "/repo/src/a.py", true),
+            ("include = ['src/*.py']", "/repo/src/pkg/a.py", false),
+            ("include = ['src']", "/repo/src/pkg/a.py", true),
+            ("include = ['./src/']", "/repo/src/a.py", true),
+            (
+                "include = ['**/routers/**']",
+                "/repo/app/routers/items.py",
+                true,
+            ),
+            (
+                "include = ['**/*_router.py']",
+                "/repo/app/items_router.py",
+                true,
+            ),
+            ("include = ['**/*_router.py']", "/repo/app/items.py", false),
+            ("include = ['src/**']", "/repo/./src/../src/a.py", true),
+            ("exclude = ['tests']", "/repo/tests/unit/a.py", false),
+            ("exclude = ['tests']", "/repo/src/tests_helper.py", true),
+            (
+                "include = ['src'], exclude = ['src/generated']",
+                "/repo/src/generated/a.py",
+                false,
+            ),
+            (
+                "include = ['src'], exclude = ['src/generated']",
+                "/repo/src/a.py",
+                true,
+            ),
+            ("include = ['src']", "/elsewhere/src/a.py", false),
+            ("exclude = ['src']", "/elsewhere/src/a.py", true),
+        ] {
+            assert_eq!(scoped(scope, path), expected, "{scope} {path}");
+        }
+    }
+
+    #[test]
+    fn every_policy_entry_honors_path_scopes() {
+        for (rule, source, settings) in [
+            (
+                "forbidden-import",
+                "import legacy\n",
+                "forbidden_imports = [{module = 'legacy', exclude = ['tests']}]",
+            ),
+            (
+                "forbidden-name",
+                "temp = 1\n",
+                "forbidden_names = [{kind = 'variable', pattern = 'temp', exclude = ['tests']}]",
+            ),
+            (
+                "forbidden-attribute",
+                "model.dict()\n",
+                "forbidden_attributes = [{attribute = 'dict', exclude = ['tests']}]",
+            ),
+            (
+                "forbidden-raise",
+                "raise Blocked()\n",
+                "forbidden_raises = [{exception = 'Blocked', exclude = ['tests']}]",
+            ),
+        ] {
+            assert_eq!(
+                check_path(rule, source, "/repo/src/a.py", "/repo", settings).len(),
+                1,
+                "{rule}"
+            );
+            assert!(
+                check_path(rule, source, "/repo/tests/a.py", "/repo", settings).is_empty(),
+                "{rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn async_filters_use_the_innermost_executing_scope() {
+        let source = "\
+import legacy
+legacy.run()
+async def handler(value=legacy.run()):
+    legacy.run()
+    callback = lambda: legacy.run()
+    class Nested:
+        legacy.run()
+def sync():
+    legacy.run()
+";
+        let lines = |in_async: bool| -> Vec<usize> {
+            check_path(
+                "forbidden-call",
+                source,
+                "/repo/a.py",
+                "/repo",
+                &format!("forbidden_calls = [{{symbol = 'legacy.run', in_async = {in_async}}}]"),
+            )
+            .iter()
+            .map(|finding| {
+                source[..finding.range.start().to_usize()]
+                    .matches('\n')
+                    .count()
+                    + 1
+            })
+            .collect()
+        };
+        assert_eq!(lines(true), [4]);
+        assert_eq!(lines(false), [2, 3, 5, 7, 9]);
+    }
+
+    #[test]
+    fn decorator_filters_match_enclosing_definitions() {
+        let source = "\
+import legacy
+@router.get('/items', response=legacy.run())
+def read():
+    legacy.run()
+    def inner():
+        legacy.run()
+@items_router.post('/items')
+def write():
+    legacy.run()
+@service
+class Handler:
+    def method(self):
+        legacy.run()
+def plain():
+    legacy.run()
+";
+        let lines = |patterns: &str| -> Vec<usize> {
+            check_path(
+                "forbidden-call",
+                source,
+                "/repo/a.py",
+                "/repo",
+                &format!("forbidden_calls = [{{symbol = 'legacy.run', decorators = {patterns}}}]"),
+            )
+            .iter()
+            .map(|finding| {
+                source[..finding.range.start().to_usize()]
+                    .matches('\n')
+                    .count()
+                    + 1
+            })
+            .collect()
+        };
+        assert_eq!(lines("['router.*']"), [4, 6]);
+        assert_eq!(lines("['router.get', '*_router.*']"), [4, 6, 9]);
+        assert_eq!(lines("['service']"), [13]);
+        assert_eq!(lines("['missing']"), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn keyword_requirements_and_bans() {
+        let settings = "forbidden_calls = [{symbol = 'subprocess.run', require_keywords = ['timeout', 'check'], forbid_keywords = ['shell']}]";
+        let check = |call: &str| {
+            messages(
+                "forbidden-call",
+                &format!("import subprocess\n{call}\n"),
+                "/repo/a.py",
+                settings,
+            )
+        };
+        assert_eq!(
+            check("subprocess.run(cmd, check=True)"),
+            ["Call to 'subprocess.run' must pass keyword argument 'timeout'."]
+        );
+        assert_eq!(
+            check("subprocess.run(cmd, timeout=1, check=True, shell=True)"),
+            ["Call to 'subprocess.run' must not pass keyword argument 'shell'."]
+        );
+        assert_eq!(
+            check("subprocess.run(cmd, shell=True, **options)"),
+            ["Call to 'subprocess.run' must not pass keyword argument 'shell'."]
+        );
+        assert!(check("subprocess.run(cmd, timeout=1, check=True)").is_empty());
+        assert!(check("subprocess.run(cmd, **options)").is_empty());
+        let custom = messages(
+            "forbidden-call",
+            "import subprocess\nsubprocess.run(cmd)\n",
+            "/repo/a.py",
+            "forbidden_calls = [{symbol = 'subprocess.run', require_keywords = ['timeout'], message = 'Bound the call.'}]",
+        );
+        assert_eq!(custom, ["Bound the call."]);
+    }
+
+    #[test]
+    fn import_name_filters_ban_selected_names() {
+        let settings = "forbidden_imports = [{module = 'app.service', names = ['service', '*_client'], message = 'Inject it.'}]";
+        for source in [
+            "from app.service import service\n",
+            "from app.service import service as shared\n",
+            "from app.service import http_client\n",
+            "from app.service import *\n",
+        ] {
+            assert_eq!(
+                messages("forbidden-import", source, "/repo/a.py", settings),
+                ["Inject it."],
+                "{source}"
+            );
+        }
+        for source in [
+            "from app.service import ServiceDep\n",
+            "import app.service\n",
+            "from app.service.sub import service\n",
+            "from app import service\n",
+        ] {
+            assert!(
+                messages("forbidden-import", source, "/repo/a.py", settings).is_empty(),
+                "{source}"
+            );
+        }
+        assert_eq!(
+            messages(
+                "forbidden-import",
+                "from .service import service\n",
+                "/repo/app/router.py",
+                "forbidden_imports = [{module = 'app.service', names = ['service']}]"
+            ),
+            ["Do not import forbidden name 'service' from 'app.service'."]
+        );
+    }
+
+    #[test]
+    fn forbidden_attributes_match_names_receivers_and_calls() {
+        let source = "\
+payload = model.dict()
+fields = model.dict
+request.state.user
+request.state.user = 1
+del request.state
+other.state.user
+self.request.state
+";
+        let lines = |settings: &str| -> Vec<usize> {
+            check_path(
+                "forbidden-attribute",
+                source,
+                "/repo/a.py",
+                "/repo",
+                settings,
+            )
+            .iter()
+            .map(|finding| {
+                source[..finding.range.start().to_usize()]
+                    .matches('\n')
+                    .count()
+                    + 1
+            })
+            .collect()
+        };
+        assert_eq!(lines("forbidden_attributes = ['*.dict']"), [1, 2]);
+        assert_eq!(
+            lines("forbidden_attributes = [{attribute = 'dict', calls_only = true}]"),
+            [1]
+        );
+        assert_eq!(lines("forbidden_attributes = ['request.state']"), [3, 4, 5]);
+        assert_eq!(
+            lines(
+                "forbidden_attributes = [{receiver = 'request', attribute = 'state', ignore_writes = true}]"
+            ),
+            [3]
+        );
+        assert_eq!(
+            lines("forbidden_attributes = ['*request.state']"),
+            [3, 4, 5, 7]
+        );
+        assert_eq!(lines("forbidden_attributes = ['state']"), [3, 4, 5, 6, 7]);
+        let reports = check_path(
+            "forbidden-attribute",
+            "model.dict()\n",
+            "/repo/a.py",
+            "/repo",
+            "forbidden_attributes = [{attribute = 'dict', replacement = 'model_dump'}]",
+        );
+        assert_eq!(
+            reports[0].message,
+            "Do not use forbidden attribute 'model.dict'. Use instead: model_dump."
+        );
+        assert_eq!(&"model.dict()\n"[reports[0].range], "model.dict");
+    }
+
+    #[test]
+    fn forbidden_raises_match_direct_and_instantiated_exceptions() {
+        let source = "\
+raise Blocked
+raise Blocked('x') from error
+raise errors.Blocked(1)
+raise Allowed()
+raise
+";
+        let lines = |settings: &str| -> Vec<usize> {
+            check_path("forbidden-raise", source, "/repo/a.py", "/repo", settings)
+                .iter()
+                .map(|finding| {
+                    source[..finding.range.start().to_usize()]
+                        .matches('\n')
+                        .count()
+                        + 1
+                })
+                .collect()
+        };
+        assert_eq!(lines("forbidden_raises = ['Blocked']"), [1, 2]);
+        assert_eq!(lines("forbidden_raises = ['*Blocked']"), [1, 2, 3]);
+        assert_eq!(lines("forbidden_raises = ['errors.Blocked']"), [3]);
+        let reports = check_path(
+            "forbidden-raise",
+            "raise Blocked('x')\n",
+            "/repo/a.py",
+            "/repo",
+            "forbidden_raises = ['Blocked']",
+        );
+        assert_eq!(
+            reports[0].message,
+            "Do not raise forbidden exception 'Blocked'."
+        );
+        assert_eq!(&"raise Blocked('x')\n"[reports[0].range], "Blocked");
+        let filtered = "\
+async def handler():
+    raise Blocked()
+@router.get('/')
+def read():
+    raise Blocked()
+";
+        for (settings, line) in [
+            ("in_async = true", 2),
+            ("in_async = false", 5),
+            ("decorators = ['router.get']", 5),
+        ] {
+            let reports = check_path(
+                "forbidden-raise",
+                filtered,
+                "/repo/a.py",
+                "/repo",
+                &format!("forbidden_raises = [{{exception = 'Blocked', {settings}}}]"),
+            );
+            assert_eq!(reports.len(), 1, "{settings}");
+            assert_eq!(
+                filtered[..reports[0].range.start().to_usize()]
+                    .matches('\n')
+                    .count()
+                    + 1,
+                line,
+                "{settings}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_policy_settings_are_inactive() {
+        for name in [
+            "forbidden-call",
+            "forbidden-import",
+            "forbidden-name",
+            "forbidden-attribute",
+            "forbidden-raise",
+        ] {
+            assert!(!create(name, "").unwrap().is_enabled(), "{name}");
+        }
+        assert!(
+            create("forbidden-attribute", "forbidden_attributes = ['*.dict']")
+                .unwrap()
+                .is_enabled()
+        );
+        assert!(
+            create("forbidden-raise", "forbidden_raises = ['Blocked']")
+                .unwrap()
+                .is_enabled()
+        );
+    }
+
+    #[test]
+    fn invalid_structured_entries_are_rejected() {
+        for (name, settings, expected) in [
+            (
+                "forbidden-call",
+                "forbidden_calls = [{symbol = 'a.b', unknown = 1}]",
+                "unknown field `unknown`",
+            ),
+            (
+                "forbidden-call",
+                "forbidden_calls = [{message = 'x'}]",
+                "missing field `symbol`",
+            ),
+            (
+                "forbidden-call",
+                "forbidden_calls = [{symbol = 'a.b', in_async = 'yes'}]",
+                "invalid type",
+            ),
+            (
+                "forbidden-call",
+                "forbidden_calls = [1]",
+                "a shorthand string or a table",
+            ),
+            (
+                "forbidden-call",
+                "forbidden_calls = [{symbol = 'a b'}]",
+                "invalid forbidden call symbol",
+            ),
+            (
+                "forbidden-call",
+                "forbidden_calls = [{symbol = 'a', require_keywords = ['not valid']}]",
+                "invalid required keyword",
+            ),
+            (
+                "forbidden-call",
+                "forbidden_calls = [{symbol = 'a', forbid_keywords = ['']}]",
+                "invalid forbidden keyword",
+            ),
+            (
+                "forbidden-call",
+                "forbidden_calls = [{symbol = 'a', decorators = ['a b']}]",
+                "invalid name pattern",
+            ),
+            (
+                "forbidden-call",
+                "forbidden_calls = [{symbol = 'a', include = ['/abs/**']}]",
+                "relative to the configuration root",
+            ),
+            (
+                "forbidden-call",
+                "forbidden_calls = [{symbol = 'a', exclude = ['../x']}]",
+                "within the configuration root",
+            ),
+            (
+                "forbidden-call",
+                "forbidden_calls = [{symbol = 'a', include = ['./']}]",
+                "must name a path",
+            ),
+            (
+                "forbidden-call",
+                "forbidden_calls = [{symbol = 'a', include = ['src/[']}]",
+                "error",
+            ),
+            (
+                "forbidden-import",
+                "forbidden_imports = [{module = 'a', names = ['a.b']}]",
+                "invalid identifier pattern",
+            ),
+            (
+                "forbidden-import",
+                "forbidden_imports = [{module = 'a', symbol = 'b'}]",
+                "unknown field `symbol`",
+            ),
+            (
+                "forbidden-name",
+                "forbidden_names = [{kind = 'module', pattern = 'x'}]",
+                "invalid forbidden name entry",
+            ),
+            (
+                "forbidden-name",
+                "forbidden_names = ['variable']",
+                "invalid forbidden name entry",
+            ),
+            (
+                "forbidden-attribute",
+                "forbidden_attributes = [{receiver = 'request'}]",
+                "need `attribute` or `qualified_prefix`",
+            ),
+            (
+                "forbidden-attribute",
+                "forbidden_attributes = [{qualified_prefix = 'os.*'}]",
+                "invalid qualified prefix",
+            ),
+            (
+                "forbidden-attribute",
+                "forbidden_attributes = [{attribute = 'x', calls = true}]",
+                "unknown field `calls`",
+            ),
+            (
+                "forbidden-attribute",
+                "unknown = []",
+                "unknown field `unknown`",
+            ),
+            (
+                "forbidden-raise",
+                "forbidden_raises = [{exception = 'A', in_async = true, extra = 1}]",
+                "unknown field `extra`",
+            ),
+            (
+                "forbidden-raise",
+                "forbidden_raises = ['']",
+                "invalid name pattern",
+            ),
+            (
+                "forbidden-raise",
+                "forbidden_raises = [{exception = 'A', replacement = 'not valid'}]",
+                "invalid replacement",
+            ),
+        ] {
+            let message = error(name, settings);
+            assert!(message.contains(expected), "{settings}: {message}");
+        }
     }
 }

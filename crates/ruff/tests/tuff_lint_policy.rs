@@ -596,3 +596,109 @@ fn call_resolution_uses_completed_python_scopes() {
         1
     );
 }
+
+#[test]
+fn forbidden_raises_resolve_imported_aliases() {
+    let options = "forbidden_raises = ['web.HTTPException|Raise a domain error.']";
+    for source in [
+        "from web import HTTPException as ApiError\nraise ApiError(404)\n",
+        "import web as framework\nraise framework.HTTPException\n",
+        "from web import HTTPException\nError = HTTPException\nraise Error() from None\n",
+    ] {
+        let diagnostics = common::check("forbidden-raise", source, options);
+        assert_eq!(diagnostics.as_array().map(Vec::len), Some(1), "{source}");
+        assert_eq!(diagnostics[0]["code"], "TUF030");
+        assert_eq!(diagnostics[0]["message"], "Raise a domain error.");
+    }
+    for source in [
+        "class HTTPException(Exception): ...\nraise HTTPException()\n",
+        "from other import HTTPException\nraise HTTPException()\n",
+        "def handle(HTTPException):\n    raise HTTPException()\n",
+    ] {
+        common::assert_clean("forbidden-raise", source, options);
+    }
+    assert_eq!(
+        count(
+            "forbidden-raise",
+            "raise ValueError('x')\n",
+            "forbidden_raises = ['builtins.ValueError']"
+        ),
+        1
+    );
+}
+
+#[test]
+fn forbidden_attribute_prefixes_resolve_aliases_and_report_once() {
+    let options = "forbidden_attributes = [{qualified_prefix = 'os.environ', message = 'Receive configuration explicitly.'}]";
+    let source = "import os as system\nvalue = system.environ.get('KEY')\nsystem.environ['KEY'] = 'x'\nos = fake\nos.environ\n";
+    let diagnostics = common::check("forbidden-attribute", source, options);
+    let lines: Vec<_> = diagnostics
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|diagnostic| diagnostic["location"]["row"].as_u64().unwrap())
+        .collect();
+    assert_eq!(lines, [2, 3], "{diagnostics:#}");
+    assert_eq!(diagnostics[0]["code"], "TUF029");
+    assert_eq!(
+        diagnostics[0]["message"],
+        "Receive configuration explicitly."
+    );
+}
+
+#[test]
+fn decorator_filters_resolve_qualified_decorator_names() {
+    let options = "forbidden_calls = [{symbol = 'time.sleep', decorators = ['web.route']}]";
+    assert_eq!(
+        count(
+            "forbidden-call",
+            "import time\nfrom web import route as endpoint\n@endpoint('/')\ndef read():\n    time.sleep(1)\n",
+            options
+        ),
+        1
+    );
+    common::assert_clean(
+        "forbidden-call",
+        "import time\nfrom other import route\n@route('/')\ndef read():\n    time.sleep(1)\n",
+        options,
+    );
+}
+
+#[test]
+fn scoped_policy_entries_use_paths_relative_to_the_project_root() {
+    for (scope, expected) in [
+        ("include = ['input.py']", 1),
+        ("include = ['*.py']", 1),
+        ("include = ['src']", 0),
+        ("exclude = ['input.py']", 0),
+    ] {
+        assert_eq!(
+            count(
+                "forbidden-raise",
+                "raise Blocked()\n",
+                &format!("forbidden_raises = [{{exception = 'Blocked', {scope}}}]")
+            ),
+            expected,
+            "{scope}"
+        );
+    }
+}
+
+#[test]
+fn named_ignores_suppress_new_policy_rules() {
+    common::assert_clean(
+        "forbidden-attribute",
+        "payload = model.dict()  # tuff: ignore[forbidden-attribute]\n",
+        "forbidden_attributes = ['*.dict']",
+    );
+    common::assert_clean(
+        "forbidden-raise",
+        "raise Blocked()  # tuff: ignore[forbidden-raise]\n",
+        "forbidden_raises = ['Blocked']",
+    );
+    common::assert_clean(
+        "forbidden-call",
+        "import subprocess\nsubprocess.run(cmd)  # tuff: ignore[forbidden-call]\n",
+        "forbidden_calls = [{symbol = 'subprocess.run', require_keywords = ['timeout']}]",
+    );
+}
