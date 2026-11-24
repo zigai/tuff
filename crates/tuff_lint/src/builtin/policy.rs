@@ -443,12 +443,10 @@ fn validate_patterns(patterns: &[String], required: bool) -> Result<()> {
 fn import_contracts(options: &RuleOptions) -> Result<Box<dyn LintRule>> {
     let options: ContractOptions = parse_options(options)?;
     if options.source_roots.is_empty()
-        || options.source_roots.iter().any(|root| {
-            Path::new(root).is_absolute()
-                || Path::new(root)
-                    .components()
-                    .any(|component| component == Component::ParentDir)
-        })
+        || options
+            .source_roots
+            .iter()
+            .any(|root| !is_contained_relative_path(root))
     {
         bail!("source_roots must be nonempty paths within the config root");
     }
@@ -501,6 +499,14 @@ fn import_contracts(options: &RuleOptions) -> Result<Box<dyn LintRule>> {
         }
     }
     Ok(Box::new(Policy::Contracts(options)))
+}
+pub(super) fn is_contained_relative_path(path: &str) -> bool {
+    // Windows treats `\dir`, `C:dir`, and `C:\dir` as rooted or drive-relative. They escape the
+    // config root there, so reject them on every platform to keep configs portable.
+    let has_drive = matches!(path.as_bytes(), [drive, b':', ..] if drive.is_ascii_alphabetic());
+    !(path.starts_with(['/', '\\'])
+        || has_drive
+        || path.split(['/', '\\']).any(|part| part == ".."))
 }
 fn module_match(pattern: &str, module: &str) -> bool {
     let pattern: Vec<_> = pattern.split('.').collect();
@@ -1518,6 +1524,32 @@ mod tests {
         assert!(tempfile(&options("unknown = []")).is_err());
         assert!(no_relative_imports(&options("unknown = true")).is_err());
         assert!(no_underscore_import_aliases(&options("unknown = true")).is_err());
+    }
+
+    #[test]
+    fn source_roots_reject_rooted_and_drive_relative_paths() {
+        for root in [
+            "/absolute",
+            r"\rooted",
+            "C:relative",
+            r"C:\absolute",
+            "c:/absolute",
+            "src/../../outside",
+            r"src\..\..\outside",
+        ] {
+            let source = format!("source_roots = [{root:?}]");
+            assert!(import_contracts(&options(&source)).is_err(), "{root}");
+        }
+        for root in [
+            ".",
+            "src",
+            "apps/server/src",
+            r"apps\server\src",
+            "lib:extra",
+        ] {
+            let source = format!("source_roots = [{root:?}]");
+            assert!(import_contracts(&options(&source)).is_ok(), "{root}");
+        }
     }
 
     #[test]
