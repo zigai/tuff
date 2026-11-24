@@ -150,4 +150,4 @@ Lint results are cached. The cache is invalidated when any file in `plugin-dirs`
 
 ## Editors
 
-`tuff server` uses the same configuration, so Python rule diagnostics and their fixes appear in editors.
+`tuff server` uses the same configuration. It reports Python rule diagnostics with their fixes and `# tuff: ignore[<rule>]` suppression actions, and shows rule details on hover over `# tuff: ignore[...]` comments. Workers stay warm across edits and reload when files in `plugin-dirs` or `watch_files` change.

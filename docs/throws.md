@@ -129,3 +129,7 @@ raise Conflict(key)  # tuff: ignore[undeclared-exception, Conflict]
 ```
 
 A suppression lists diagnostic codes, diagnostic names, or exception names. `# throws: ignore` without a list suppresses every diagnostic on that line. Place it on the line where the exception escapes, on the `def` line, or for `THROWS002` on the `except` clause. It may follow another comment, as in `# noqa: E501 # throws: ignore[KeyError]`.
+
+## Editors
+
+When a workspace configures `[tool.tuff.throws]` or `[throws]`, `tuff server` reports `THROWS001`–`THROWS004` diagnostics with call chains in related information using open unsaved buffers. Hovering over a function definition or call site shows declared and inferred exceptions. Workspaces without a throws section incur no exception-flow analysis overhead.
