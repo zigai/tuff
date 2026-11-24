@@ -258,3 +258,211 @@ fn translation_builtin_alias_and_shadowing() {
         "",
     );
 }
+
+fn count(rule: &str, source: &str, options: &str) -> usize {
+    common::check(rule, source, options)
+        .as_array()
+        .unwrap()
+        .len()
+}
+
+#[test]
+fn deleted_arguments_are_reported_only_when_otherwise_unused() {
+    for source in [
+        "async def down(self, migrator):\n    del migrator\n    return None\n",
+        "def serialize(key, value):\n    del key\n    return serialize(key='item', value=value)\n",
+        "def callback(value):\n    del value\n",
+        "def collision(value, _value):\n    del value\n    return _value\n",
+        "def unpack(first, second):\n    del (first, [second])\n",
+    ] {
+        let reports = common::check("no-del-unused-argument", source, "");
+        assert_eq!(reports.as_array().unwrap().len(), 1, "{source}");
+        assert!(reports[0]["fix"].is_null(), "{source}");
+    }
+    for source in [
+        "async def down(self, _migrator):\n    return None\n",
+        "def consume(value):\n    consume(value)\n    del value\n",
+        "def make_reader(value):\n    del value\n    def read():\n        return value\n    return read\n",
+        "def remove(items, key):\n    del items[key]\n",
+        "def clear(resource):\n    del resource.handle\n",
+        "def outer(value):\n    def inner():\n        del value\n    return inner\n",
+        "def rebind(value):\n    del value\n    value = 1\n    return value\n",
+    ] {
+        common::assert_clean("no-del-unused-argument", source, "");
+    }
+}
+
+#[test]
+fn deleted_argument_fixes_rename_only_positional_and_variadic_parameters() {
+    for (source, expected) in [
+        (
+            "def callback(*args, **kwargs):\n    del args, kwargs\n    return None\n",
+            "def callback(*_args, **_kwargs):\n    return None\n",
+        ),
+        (
+            "def close(_exc_type):\n    del _exc_type\n    return None\n",
+            "def close(_exc_type):\n    return None\n",
+        ),
+        (
+            "def callback(value, /):\n    del value\n    return None\n",
+            "def callback(_value, /):\n    return None\n",
+        ),
+        (
+            "def callback(value, /):\n    del value\n",
+            "def callback(_value, /):\n    pass\n",
+        ),
+        (
+            "def callback(value, /):\n    cache = 1\n    del (cache, value), cache\n",
+            "def callback(_value, /):\n    cache = 1\n    del cache, cache\n",
+        ),
+        (
+            "def callback(first, second, /):\n    del first\n    del second\n",
+            "def callback(_first, _second, /):\n    pass\n",
+        ),
+        (
+            "def callback(value, /):\n    if value_ready(): del value\n    return None\n",
+            "def callback(_value, /):\n    if value_ready(): pass\n    return None\n",
+        ),
+        (
+            "def callback(value, /):\n    if value_ready():\n        del value\n    return None\n",
+            "def callback(_value, /):\n    if value_ready():\n        pass\n    return None\n",
+        ),
+    ] {
+        common::assert_fix("no-del-unused-argument", source, "", expected);
+    }
+    let reports = common::check(
+        "no-del-unused-argument",
+        "def callback(value, /):\n    del value\n    return _value\n",
+        "",
+    );
+    assert!(reports[0]["fix"].is_null());
+}
+
+#[test]
+fn deleted_arguments_skip_test_and_configured_paths() {
+    let files = [("tests/helpers.py", "def callback(value):\n    del value\n")];
+    for (path, options) in [
+        ("tests/helpers.py", ""),
+        ("test_helpers.py", ""),
+        ("benchmarks/run.py", ""),
+        ("generated/run.py", "excluded_path_parts = ['generated']"),
+    ] {
+        let files = [(path, files[0].1)];
+        let reports = common::check_project("no-del-unused-argument", &files, options, path);
+        assert_eq!(reports.as_array().unwrap().len(), 0, "{path}");
+    }
+    let reports = common::check_project(
+        "no-del-unused-argument",
+        &files,
+        "excluded_path_parts = []",
+        "tests/helpers.py",
+    );
+    assert_eq!(reports.as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn subprocess_run_requires_a_timeout_through_aliases() {
+    for source in [
+        "import subprocess\nsubprocess.run(command, check=False)\n",
+        "import subprocess\nsubprocess.run(command, timeout=None)\n",
+        "import subprocess as sp\nsp.run(command)\n",
+        "from subprocess import run as run_process\nrun_process(command)\n",
+        "import subprocess\nrunner = subprocess.run\nrunner(command)\n",
+        "import subprocess\ndef build():\n    runner = subprocess.run\n    return runner(command)\n",
+        "from subprocess import *\nrun(command, **options)\n",
+    ] {
+        assert_eq!(
+            count("require-subprocess-run-timeout", source, ""),
+            1,
+            "{source}"
+        );
+    }
+    for source in [
+        "import subprocess\nsubprocess.run(command, check=False, timeout=30)\n",
+        "from subprocess import run\nrun(command, timeout=limit)\n",
+        "import asyncio\nasyncio.run(main())\n",
+        "import subprocess\nrunner = subprocess.run\ndef call(runner):\n    runner(command)\n",
+        "def run(command):\n    pass\nrun(command)\n",
+        "import subprocess\nsubprocess.Popen(command)\n",
+    ] {
+        common::assert_clean("require-subprocess-run-timeout", source, "");
+    }
+}
+
+#[test]
+fn empty_container_assignments_need_annotations() {
+    for source in [
+        "items = []\n",
+        "payload = {}\n",
+        "seen = set()\n",
+        "first = second = list()\n",
+        "class Example:\n    items: list[str] = []\n\nitems = []\n",
+        "def clear(items):\n    items = []\n",
+        "if (items := []):\n    pass\n",
+        "items = []\nitems: list[str] = ['value']\n",
+    ] {
+        assert_eq!(
+            count("require-typed-empty-container-assignment", source, ""),
+            1,
+            "{source}"
+        );
+    }
+    for source in [
+        "items: list[str] = []\n",
+        "payload: dict[str, object] = {}\n",
+        "items = [value]\n",
+        "self.items = []\n",
+        "empty = tuple()\n",
+        "empty = ()\n",
+        "items = list(source)\n",
+        "def clear(items: list[str]) -> None:\n    items = []\n",
+        "class Example:\n    items: list[str] = []\n",
+        "items: list[str]\nitems = []\n",
+        "items: list[str] = ['value']\ndef reset():\n    items = []\n",
+        "def list():\n    pass\nitems = list()\n",
+    ] {
+        common::assert_clean("require-typed-empty-container-assignment", source, "");
+    }
+}
+
+#[test]
+fn boilerplate_docstrings_are_removed() {
+    for (source, expected) in [
+        (
+            "class Status(StrEnum):\n    \"\"\"Represent Status state and behavior.\"\"\"\n\n    ACTIVE = \"active\"\n",
+            "class Status(StrEnum):\n\n    ACTIVE = \"active\"\n",
+        ),
+        (
+            "def create_record(name: str) -> Record:\n    \"\"\"Value for   create_record.\"\"\"\n\n    return Record(name=name)\n",
+            "def create_record(name: str) -> Record:\n\n    return Record(name=name)\n",
+        ),
+        (
+            "def load(path: str, strict: bool, max_depth: int) -> Config:\n    \"\"\"Load the config; strict mode rejects unknown keys.\n\n    Args:\n        path (str): Value for path.\n        strict: Value for strict.\n        max_depth (int): Value for max depth.\n    \"\"\"\n    return Config.read(path, strict=strict)\n",
+            "def load(path: str, strict: bool, max_depth: int) -> Config:\n    \"\"\"Load the config; strict mode rejects unknown keys.\"\"\"\n    return Config.read(path, strict=strict)\n",
+        ),
+        (
+            "def load(path: str, strict: bool) -> Config:\n    r'''Load the config.\n\n    Args:\n        path: The path.\n        strict: Reject unknown keys.\n    '''\n    return Config.read(path, strict=strict)\n",
+            "def load(path: str, strict: bool) -> Config:\n    r'''Load the config.\n\n    Args:\n        strict: Reject unknown keys.\n    '''\n    return Config.read(path, strict=strict)\n",
+        ),
+    ] {
+        common::assert_fix("no-boilerplate-docstrings", source, "", expected);
+    }
+    for source in [
+        "def create_record():\n    \"\"\"Value for create_record.\"\"\"\n",
+        "def create_record():\n    # Keep this note.\n    \"\"\"Value for create_record.\"\"\"\n    return 1\n",
+    ] {
+        let reports = common::check("no-boilerplate-docstrings", source, "");
+        assert_eq!(reports.as_array().unwrap().len(), 1, "{source}");
+        assert!(reports[0]["fix"].is_null(), "{source}");
+    }
+    for source in [
+        "class Status(StrEnum):\n    ACTIVE = \"active\"\n",
+        "def retry_timeout() -> float | None:\n    \"\"\"Value for retry timeout; None disables retries.\"\"\"\n    return None\n",
+        "def parse_config(value: str) -> Config:\n    \"\"\"Parse the legacy wire format accepted by older clients.\"\"\"\n    return Config.model_validate_json(value)\n",
+        "def create_record(): \"Value for create_record.\"\n",
+        "def create_record():\n    \"Value for \" \"create_record.\"\n    return 1\n",
+        "def load(path):\n    \"\"\"Load.\n\n    Args:\n        path: The path to read, relative to the root.\n    \"\"\"\n",
+    ] {
+        common::assert_clean("no-boilerplate-docstrings", source, "");
+    }
+}

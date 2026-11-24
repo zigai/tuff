@@ -47,6 +47,26 @@ impl Case {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "Only integration targets for rules that read other project files use this helper."
+)]
+pub(crate) fn check_project(
+    rule: &str,
+    files: &[(&str, &str)],
+    options: &str,
+    path: &str,
+) -> Value {
+    let mut case = Case::new(rule, "", options);
+    for (relative, contents) in files {
+        let file = case.directory.path().join(relative);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(file, contents).unwrap();
+    }
+    case.source = case.directory.path().join(path);
+    serde_json::from_slice(&case.run(&[]).stdout).unwrap()
+}
+
 pub(crate) fn check(rule: &str, source: &str, options: &str) -> Value {
     let case = Case::new(rule, source, options);
     serde_json::from_slice(&case.run(&[]).stdout).unwrap()

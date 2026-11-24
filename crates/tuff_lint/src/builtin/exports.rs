@@ -1,14 +1,18 @@
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::SystemTime;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use ruff_diagnostics::{Edit, Fix};
 use ruff_python_ast::visitor::source_order::{SourceOrderVisitor, TraversalSignal};
 use ruff_python_ast::{self as ast, AnyNodeRef, Expr, NodeKind, Stmt};
 use ruff_text_size::{Ranged, TextRange};
 use serde::Deserialize;
 
+use super::policy::is_contained_relative_path;
 use super::style::{
-    call_arguments, full_end, has_comment, is_name, sequence, simple_line, targets,
+    call_arguments, full_end, has_comment, is_name, sequence, simple_line, targets, test_like_path,
 };
 use crate::{
     Context, Finding, LintRule, RuleDefinition, RuleOptions, parse_options, reject_options,
@@ -17,6 +21,7 @@ use crate::{
 pub static RULES: &[RuleDefinition] = &[
     crate::native_rule! { name: "module-all-at-bottom", code: "TUF015", explanation: "Place module export declarations after runtime definitions.", node_kinds: &[NodeKind::ModModule], checks_comments: false, fixable: true, create: all_bottom },
     crate::native_rule! { name: "no-underscore-all-exports", code: "TUF016", explanation: "Do not export underscore-prefixed symbols through module __all__.", node_kinds: &[NodeKind::ModModule], checks_comments: false, fixable: false, create: private_exports },
+    crate::native_rule! { name: "respect-module-all", code: "TUF027", explanation: "Import only names a module exports through __all__.", node_kinds: &[NodeKind::StmtImportFrom], checks_comments: false, fixable: false, create: respect_module_all },
 ];
 
 #[derive(Debug)]
@@ -567,5 +572,309 @@ impl LintRule for PrivateExports {
             aliases: Aliases::default(),
             out,
         });
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ModuleAllOptions {
+    source_roots: Vec<String>,
+    module_exports: Vec<String>,
+}
+impl Default for ModuleAllOptions {
+    fn default() -> Self {
+        Self {
+            source_roots: vec![".".into()],
+            module_exports: Vec::new(),
+        }
+    }
+}
+
+type Exports = Option<Arc<HashSet<String>>>;
+
+#[derive(Debug)]
+struct CachedExports {
+    modified: SystemTime,
+    len: u64,
+    exports: Exports,
+}
+
+#[derive(Debug)]
+struct ModuleAll {
+    source_roots: Vec<String>,
+    configured: HashMap<String, HashSet<String>>,
+    // Keyed by project root, then module file. The registry can be shared by every project root
+    // in a run, and many files import from the same sibling modules.
+    cache: Mutex<HashMap<PathBuf, HashMap<PathBuf, CachedExports>>>,
+}
+fn respect_module_all(o: &RuleOptions) -> Result<Box<dyn LintRule>> {
+    let options: ModuleAllOptions = parse_options(o)?;
+    if options.source_roots.is_empty()
+        || options
+            .source_roots
+            .iter()
+            .any(|root| !is_contained_relative_path(root))
+    {
+        bail!("source_roots must be nonempty paths within the config root");
+    }
+    let mut configured = HashMap::new();
+    for entry in &options.module_exports {
+        let Some((module, exports)) = entry.split_once('=') else {
+            bail!("expected 'module=name1,name2' entry, got {entry:?}");
+        };
+        let module = module.trim();
+        if module.is_empty() {
+            bail!("missing module name in entry {entry:?}");
+        }
+        configured.insert(
+            module.to_string(),
+            exports
+                .split(',')
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .collect(),
+        );
+    }
+    Ok(Box::new(ModuleAll {
+        source_roots: options.source_roots,
+        configured,
+        cache: Mutex::default(),
+    }))
+}
+impl ModuleAll {
+    fn module_path(&self, root: &Path, module: &str) -> Option<PathBuf> {
+        self.source_roots.iter().find_map(|source_root| {
+            let base = module
+                .split('.')
+                .fold(root.join(source_root), |path, part| path.join(part));
+            let package = base.join("__init__.py");
+            if package.is_file() {
+                return Some(package);
+            }
+            let module = base.with_extension("py");
+            module.is_file().then_some(module)
+        })
+    }
+    fn local_exports(&self, root: &Path, module: &str) -> Exports {
+        let path = self.module_path(root, module)?;
+        let metadata = std::fs::metadata(&path).ok()?;
+        let modified = metadata.modified().ok()?;
+        let len = metadata.len();
+        if let Some(cached) = self
+            .cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(root)
+            .and_then(|files| files.get(&path))
+            && cached.modified == modified
+            && cached.len == len
+        {
+            return cached.exports.clone();
+        }
+        let exports = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|source| ruff_python_parser::parse_module(&source).ok())
+            .and_then(|parsed| declared_exports(&parsed.syntax().body))
+            .map(Arc::new);
+        self.cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(root.to_path_buf())
+            .or_default()
+            .insert(
+                path,
+                CachedExports {
+                    modified,
+                    len,
+                    exports: exports.clone(),
+                },
+            );
+        exports
+    }
+}
+impl LintRule for ModuleAll {
+    fn check(&self, node: AnyNodeRef<'_>, c: &Context<'_, '_, '_>, out: &mut Vec<Finding>) {
+        let AnyNodeRef::StmtImportFrom(import) = node else {
+            return;
+        };
+        let Some(module) = &import.module else {
+            return;
+        };
+        if import.level > 0
+            || import.names.iter().any(|alias| alias.name.as_str() == "*")
+            || c.path.file_name().is_some_and(|name| name == "conftest.py")
+            || test_like_path(c, &["tests"])
+        {
+            return;
+        }
+        let module = module.as_str();
+        let local;
+        let (exports, repo_local) = match self.configured.get(module) {
+            Some(exports) => (exports, false),
+            None => {
+                let Some(exports) = self.local_exports(c.root, module) else {
+                    return;
+                };
+                local = exports;
+                (&*local, true)
+            }
+        };
+        for alias in &import.names {
+            let name = alias.name.as_str();
+            if exports.contains(name) {
+                continue;
+            }
+            let message = if repo_local {
+                format!(
+                    "Do not import '{name}' from repo-local module '{module}'; either stop importing it or add it to that module's __all__ exports."
+                )
+            } else {
+                format!(
+                    "Do not import '{name}' from '{module}'; that module defines __all__ and does not export it."
+                )
+            };
+            out.push(Finding::new("respect-module-all", alias.range(), message));
+        }
+    }
+}
+
+fn string_sequence(expression: &Expr) -> Option<Vec<String>> {
+    if !matches!(expression, Expr::List(_) | Expr::Tuple(_) | Expr::Set(_)) {
+        return None;
+    }
+    sequence(expression)?.iter().map(string).collect()
+}
+fn mutates_all(target: &Expr) -> bool {
+    let mut current = target;
+    while let Expr::Subscript(ast::ExprSubscript { value, .. })
+    | Expr::Attribute(ast::ExprAttribute { value, .. }) = current
+    {
+        current = value;
+    }
+    is_name(current, "__all__")
+}
+
+// Statically reads the names a module lists in `__all__`. Any top-level `__all__` update that
+// cannot be evaluated without running the module makes the exports unknown.
+fn declared_exports(body: &[Stmt]) -> Option<HashSet<String>> {
+    let mut exports: Option<Vec<String>> = None;
+    for stmt in body {
+        match stmt {
+            Stmt::Assign(assign)
+                if assign
+                    .targets
+                    .iter()
+                    .any(|target| is_name(target, "__all__")) =>
+            {
+                exports = Some(string_sequence(&assign.value)?);
+            }
+            Stmt::Assign(assign) if assign.targets.iter().any(mutates_all) => return None,
+            Stmt::AnnAssign(assign) if is_name(&assign.target, "__all__") => {
+                exports = Some(string_sequence(assign.value.as_deref()?)?);
+            }
+            Stmt::AugAssign(assign) if is_name(&assign.target, "__all__") => {
+                if assign.op != ast::Operator::Add {
+                    return None;
+                }
+                exports.as_mut()?.extend(string_sequence(&assign.value)?);
+            }
+            Stmt::Expr(statement) => {
+                let Expr::Call(call) = &*statement.value else {
+                    continue;
+                };
+                let Expr::Attribute(attribute) = &*call.func else {
+                    continue;
+                };
+                if !is_name(&attribute.value, "__all__") {
+                    continue;
+                }
+                let names = exports.as_mut()?;
+                if !call.arguments.keywords.is_empty() {
+                    return None;
+                }
+                match (attribute.attr.as_str(), &*call.arguments.args) {
+                    ("append", [argument]) => names.push(string(argument)?),
+                    ("extend", [argument]) => names.extend(string_sequence(argument)?),
+                    _ => return None,
+                }
+            }
+            Stmt::Delete(delete) if delete.targets.iter().any(mutates_all) => return None,
+            _ => {}
+        }
+    }
+    exports.map(|names| names.into_iter().collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+    use crate::NameResolver;
+
+    struct NoNames;
+    impl NameResolver for NoNames {
+        fn qualified_name(&self, _expression: &Expr) -> Option<String> {
+            None
+        }
+        fn binding_range(&self, _expression: &ast::ExprName) -> Option<TextRange> {
+            None
+        }
+    }
+    fn options(source: &str) -> RuleOptions {
+        toml::from_str(source).unwrap()
+    }
+
+    #[test]
+    fn module_all_rejects_invalid_options() {
+        for source in [
+            "source_roots = []",
+            "source_roots = ['../outside']",
+            r"source_roots = ['C:\\outside']",
+            "module_exports = ['missing-separator']",
+            "module_exports = [' = name']",
+            "unknown = true",
+        ] {
+            assert!(respect_module_all(&options(source)).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn module_all_rereads_a_module_after_it_changes() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.cache/lint-tests")
+            .join(format!("module-all-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let module = root.join("service.py");
+        let rule = respect_module_all(&RuleOptions::new()).unwrap();
+        let source = "from service import extra\n";
+        let parsed = ruff_python_parser::parse_module(source)
+            .unwrap()
+            .into_syntax();
+        let Some(Stmt::ImportFrom(import)) = parsed.body.first() else {
+            panic!("expected an import");
+        };
+        let context = Context {
+            module: &parsed,
+            source,
+            path: &root.join("main.py"),
+            root: &root,
+            python_version: ast::PythonVersion::PY313,
+            resolver: &NoNames,
+            ancestors: &[],
+            rendered_metrics: None,
+        };
+        let mut findings = Vec::new();
+        for (exports, expected) in [
+            ("__all__ = ['public']\n", 1),
+            ("__all__ = ['public', 'extra']\n", 0),
+        ] {
+            fs::write(&module, exports).unwrap();
+            findings.clear();
+            rule.check(AnyNodeRef::StmtImportFrom(import), &context, &mut findings);
+            assert_eq!(findings.len(), expected, "{exports}");
+        }
+        fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -1,6 +1,6 @@
 # Native lint rules
 
-Tuff provides 52 opt-in Rust rules. Enable canonical names under `[tool.tuff.lint]`, or select their `TUF` codes with the standard lint selectors. Broad Ruff selectors such as `ALL` and categories do not enable native rules. Defaults remain Ruff-compatible.
+Tuff provides 57 opt-in Rust rules. Enable canonical names under `[tool.tuff.lint]`, or select their `TUF` codes with the standard lint selectors. Broad Ruff selectors such as `ALL` and categories do not enable native rules. Defaults remain Ruff-compatible.
 
 ```toml
 [tool.tuff.lint]
