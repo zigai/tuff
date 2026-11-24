@@ -59,11 +59,11 @@ pub(crate) fn replace_spacing_overlaps(context: &mut LintContext<'_>, source: &s
         };
         if !matches!(
             Rule::from_name(name.as_str()),
-            Ok(Rule::BlankLineBetweenMethods
-                | Rule::BlankLinesTopLevel
+            Ok(Rule::MissingBlankLineBeforeMethod
+                | Rule::MissingBlankLinesBeforeTopLevelDefinition
                 | Rule::TooManyBlankLines
-                | Rule::BlankLinesAfterFunctionOrClass
-                | Rule::BlankLinesBeforeNestedDefinition
+                | Rule::MissingBlankLinesAfterTopLevelDefinition
+                | Rule::MissingBlankLineBeforeNestedDefinition
                 | Rule::TooManyNewlinesAtEndOfFile)
         ) {
             return true;

@@ -256,14 +256,19 @@ struct Tools {
 }
 
 fn read_options(path: &Path) -> Result<Option<Options>> {
+    let is_pyproject = match path.file_name().and_then(|name| name.to_str()) {
+        Some("pyproject.toml") => true,
+        Some("tuff.toml" | ".tuff.toml") => false,
+        _ => return Ok(None),
+    };
     let contents =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let options = match path.file_name().and_then(|name| name.to_str()) {
-        Some("pyproject.toml") => toml::from_str::<Pyproject>(&contents)?
+    let options = if is_pyproject {
+        toml::from_str::<Pyproject>(&contents)?
             .tool
-            .and_then(|tool| tool.tuff),
-        Some("tuff.toml" | ".tuff.toml") => Some(toml::from_str(&contents)?),
-        _ => None,
+            .and_then(|tool| tool.tuff)
+    } else {
+        Some(toml::from_str(&contents)?)
     };
     Ok(options)
 }

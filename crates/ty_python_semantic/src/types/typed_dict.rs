@@ -272,7 +272,7 @@ impl<'db> TypedDictType<'db> {
     pub(crate) fn openness(self, db: &'db dyn Db) -> TypedDictOpenness<'db> {
         #[salsa::tracked(
             returns(copy),
-            cycle_initial=|_, _, _| TypedDictOpenness::ImplicitlyOpen,
+            cycle_initial=|_, _, _, _| TypedDictOpenness::ImplicitlyOpen,
             heap_size=ruff_memory_usage::heap_size
         )]
         fn class_based_openness<'db>(
@@ -539,7 +539,7 @@ impl<'db> TypedDictType<'db> {
         // being collected, e.g. through `typing.Self` in a `TypedDict` field.
         #[salsa::tracked(
             returns(ref),
-            cycle_initial=|_, _, _| TypedDictSchema::default(),
+            cycle_initial=|_, _, _, _| TypedDictSchema::default(),
             heap_size=ruff_memory_usage::heap_size
         )]
         fn class_based_items<'db>(db: &'db dyn Db, class: ClassType<'db>) -> TypedDictSchema<'db> {
@@ -819,6 +819,18 @@ impl<'c, 'db> TypeRelationChecker<'_, 'c, 'db> {
             return self.always();
         }
 
+        // Mutable fields require the relation in both directions. For identical annotations,
+        // the reverse check would repeat the forward check with exactly the same arguments.
+        let check_mutable_field = |source, target| {
+            let forward = self.check_type_pair(db, source, target);
+            if forward.is_trivially_always_satisfied() && source == target {
+                return forward;
+            }
+            forward.and(db, self.constraints, || {
+                self.check_type_pair(db, target, source)
+            })
+        };
+
         let source_items = source.items(db);
         let target_items = target.items(db);
         let source_openness = source.openness(db);
@@ -877,18 +889,10 @@ impl<'c, 'db> TypeRelationChecker<'_, 'c, 'db> {
                     // invariants of self. For fully-static types, this is "equivalence".
                     // For gradual types, it depends on the relation, but mutual
                     // assignability is "consistency".
-                    self.check_type_pair(
-                        db,
+                    check_mutable_field(
                         source_item_field.declared_ty,
                         target_item_field.declared_ty,
                     )
-                    .and(db, self.constraints, || {
-                        self.check_type_pair(
-                            db,
-                            target_item_field.declared_ty,
-                            source_item_field.declared_ty,
-                        )
-                    })
                 }
             } else {
                 // `NotRequired[]` target fields
@@ -943,18 +947,10 @@ impl<'c, 'db> TypeRelationChecker<'_, 'c, 'db> {
 
                         // As above, for mutable fields in the target, the relation needs
                         // to apply both ways.
-                        self.check_type_pair(
-                            db,
+                        check_mutable_field(
                             source_item_field.declared_ty,
                             target_item_field.declared_ty,
                         )
-                        .and(db, self.constraints, || {
-                            self.check_type_pair(
-                                db,
-                                target_item_field.declared_ty,
-                                source_item_field.declared_ty,
-                            )
-                        })
                     } else {
                         let Some(source_extra_items) = source_openness.explicit_extra_items()
                         else {
@@ -963,18 +959,10 @@ impl<'c, 'db> TypeRelationChecker<'_, 'c, 'db> {
                         if source_extra_items.is_read_only() {
                             return self.never();
                         }
-                        self.check_type_pair(
-                            db,
+                        check_mutable_field(
                             source_extra_items.declared_ty,
                             target_item_field.declared_ty,
                         )
-                        .and(db, self.constraints, || {
-                            self.check_type_pair(
-                                db,
-                                target_item_field.declared_ty,
-                                source_extra_items.declared_ty,
-                            )
-                        })
                     }
                 }
             };
@@ -1452,7 +1440,7 @@ impl<'db> VarianceInferable<'db> for TypedDictType<'db> {
 
 #[salsa::tracked(
     returns(ref),
-    cycle_initial = |_, _, _|TypedDictSchema::default(),
+    cycle_initial = |_, _, _, _|TypedDictSchema::default(),
     heap_size = ruff_memory_usage::heap_size
 )]
 pub(super) fn deferred_functional_typed_dict_schema<'db>(
@@ -1517,7 +1505,7 @@ pub(super) fn deferred_functional_typed_dict_schema<'db>(
 /// ```
 #[salsa::tracked(
     returns(copy),
-    cycle_initial = |_, _, _| TypedDictOpenness::ImplicitlyOpen,
+    cycle_initial = |_, _, _, _| TypedDictOpenness::ImplicitlyOpen,
     heap_size = ruff_memory_usage::heap_size
 )]
 pub(super) fn deferred_functional_typed_dict_openness<'db>(
@@ -2131,36 +2119,19 @@ fn merge_unpacked_key_definitions<'db>(
     if existing == new { existing } else { None }
 }
 
-/// Extracts unpacked `TypedDict` keys for a `**kwargs` annotation only when the annotation
-/// explicitly uses `Unpack[...]`.
+/// Returns the `TypedDict` unpacked by a `**kwargs` annotation.
 ///
 /// Per [PEP 692](https://peps.python.org/pep-0692/#typeddict-unions), this accepts only a concrete
 /// `TypedDict` target, or a type alias resolving to one.
-pub(crate) fn extract_unpacked_typed_dict_keys_from_kwargs_annotation<'db>(
+pub(crate) fn unpacked_typed_dict_from_kwargs_annotation<'db>(
     db: &'db dyn Db,
     annotated_type: Type<'db>,
     annotation_flags: TypeExpressionFlags,
-) -> Option<BTreeMap<Name, UnpackedTypedDictKey<'db>>> {
-    let typed_dict = annotation_flags
-        .contains(TypeExpressionFlags::UNPACK)
-        .then(|| annotated_type.resolve_type_alias(db).as_typed_dict())??;
-
-    Some(
-        typed_dict
-            .items(db)
-            .iter()
-            .map(|(name, field)| {
-                (
-                    name.clone(),
-                    UnpackedTypedDictKey {
-                        value_ty: field.declared_ty,
-                        is_required: field.is_required(),
-                        definition: field.first_declaration(),
-                    },
-                )
-            })
-            .collect(),
-    )
+) -> Option<TypedDictType<'db>> {
+    if !annotation_flags.contains(TypeExpressionFlags::UNPACK) {
+        return None;
+    }
+    annotated_type.resolve_type_alias(db).as_typed_dict()
 }
 
 /// Infers each unpacked `**kwargs` constructor argument exactly once.

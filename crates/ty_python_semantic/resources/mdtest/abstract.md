@@ -590,3 +590,53 @@ class Stacked(ABC):
 
 Stacked()  # error: [abstract-class-instantiation]
 ```
+
+A decorator can also get an abstract method by calling the function it decorates. Here ty infers `T`
+from the return annotation of `make_method`. The decorator replaces `make_method` with
+`Abstract.method`, so `Factory` is abstract.
+
+```py
+from ty_extensions._internal import TypeOf
+
+def evaluate(f: Callable[[object], T]) -> T:
+    return f(object())
+
+class Factory:
+    @evaluate
+    def make_method(self: object) -> TypeOf[Abstract.method]:
+        return Abstract.method
+
+Factory()  # error: [abstract-class-instantiation]
+```
+
+## Narrowing a method in the class body
+
+The identity decorator leaves `method` unchanged. The class body then marks it abstract, and the
+type guard narrows it to the type of the abstract `Interface.method`.
+
+```py
+from abc import ABC, abstractmethod
+from typing import TypeGuard, TypeVar
+
+F = TypeVar("F")
+
+def identity(f: F) -> F:
+    return f
+
+def same(f: object, other: F) -> TypeGuard[F]:
+    return f is other
+
+class Interface(ABC):
+    @abstractmethod
+    def method(self: object) -> None: ...
+
+class Example(ABC):
+    @identity
+    def method(self: object) -> None:
+        pass
+
+    Interface.method = abstractmethod(method)
+    assert same(method, Interface.method)
+
+Example()  # error: [abstract-class-instantiation]
+```

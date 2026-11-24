@@ -58,7 +58,7 @@ use crate::strategy::MisconfigurationStrategy;
 use crate::typeshed::{TypeshedVersions, vendored_typeshed_versions};
 use crate::{ResolverEnvironment, ResolverFile, SearchPathSettings, SearchPathSettingsError};
 
-use self::search::ModuleSearchCursor;
+use self::search::RootSearchPaths;
 pub(crate) use self::search::{list_all_modules, list_root_modules, list_submodules};
 
 /// Resolves a module name to a module.
@@ -1257,7 +1257,7 @@ fn resolve_name<'db>(
     mode: ModuleResolveMode,
 ) -> Option<ResolvedNames<'db>> {
     let context = ResolverContext::new(db, resolver_environment, mode);
-    ModuleSearchCursor::with_configured_search_paths(&context).resolve_name(name)
+    RootSearchPaths::Configured.resolve_name(&context, name)
 }
 
 /// Like `resolve_name` but for cases where it failed to resolve the module
@@ -1274,7 +1274,7 @@ fn desperately_resolve_name<'db>(
     let importing_file = ResolverFile::new(db, importing_file, resolver_environment);
     let search_paths = absolute_desperate_search_paths(db, importing_file).unwrap_or_default();
     let context = ResolverContext::new(db, resolver_environment, mode);
-    ModuleSearchCursor::with_supplied_search_paths(&context, search_paths).resolve_name(name)
+    RootSearchPaths::Supplied(search_paths).resolve_name(&context, name)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, get_size2::GetSize)]
@@ -1667,18 +1667,8 @@ fn is_legacy_namespace_package(
     context: &ResolverContext,
     init: File,
 ) -> bool {
-    static PKG_FINDER: LazyLock<Finder<'static>> = LazyLock::new(|| Finder::new("pkg"));
-
     // Just an optimization, the stdlib and typeshed are never legacy namespace packages
     if package_path.search_path().is_standard_library() {
-        return false;
-    }
-
-    // Both namespace idioms reference `pkgutil` or `pkg_resources`. Keep non-ASCII
-    // sources as candidates because Python normalizes identifiers with NFKC.
-    // This best-effort filter does not account for escaped or concatenated module names.
-    let source = source_text(context.db, init);
-    if source.is_ascii() && PKG_FINDER.find(source.as_bytes()).is_none() {
         return false;
     }
 
@@ -1706,6 +1696,16 @@ fn is_legacy_namespace_package(
 /// ```
 #[salsa::tracked(returns(copy))]
 fn has_legacy_namespace_declaration(db: &dyn Db, init: PythonFile<'_>) -> bool {
+    static PKG_FINDER: LazyLock<Finder<'static>> = LazyLock::new(|| Finder::new("pkg"));
+
+    // Both namespace idioms reference `pkgutil` or `pkg_resources`. Keep non-ASCII
+    // sources as candidates because Python normalizes identifiers with NFKC.
+    // This best-effort filter does not account for escaped or concatenated module names.
+    let source = source_text(db, init.file(db));
+    if source.is_ascii() && PKG_FINDER.find(source.as_bytes()).is_none() {
+        return false;
+    }
+
     // This is all syntax-only analysis so it *could* be fooled but it's really unlikely.
     //
     // The benefit of being syntax-only is speed and avoiding circular dependencies

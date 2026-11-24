@@ -345,6 +345,7 @@ impl Configuration {
             crate::tuff::take_python_rule_ignores(&mut per_file_ignores, &tuff)?;
 
         Ok(Settings {
+            preview: global_preview,
             cache_dir: cache_directory,
             fix: self.fix.unwrap_or(false),
             fix_only: self.fix_only.unwrap_or(false),
@@ -904,6 +905,8 @@ impl LintConfiguration {
     }
 
     fn as_rule_table(&self, preview: PreviewMode) -> Result<RuleTable> {
+        use std::fmt::Write;
+
         let preview = PreviewOptions {
             mode: preview,
             require_explicit: self.explicit_preview_rules.unwrap_or_default(),
@@ -1137,19 +1140,16 @@ impl LintConfiguration {
         match removed_selectors.as_slice() {
             [] => (),
             [selection] => {
-                let (prefix, code) = selection.prefix_and_code();
                 return Err(anyhow!(
-                    "Rule `{prefix}{code}` was removed and cannot be selected."
+                    "Rule {:#} was removed and cannot be selected.",
+                    selection.name_and_code()
                 ));
             }
             [..] => {
                 let mut message =
                     "The following rules have been removed and cannot be selected:".to_string();
                 for selection in removed_selectors {
-                    let (prefix, code) = selection.prefix_and_code();
-                    message.push_str("\n    - ");
-                    message.push_str(prefix);
-                    message.push_str(code);
+                    write!(message, "\n    - {:#}", selection.name_and_code()).unwrap();
                 }
                 message.push('\n');
                 return Err(anyhow!(message));
@@ -1159,10 +1159,7 @@ impl LintConfiguration {
         if !removed_ignored_rules.is_empty() {
             let mut rules = String::new();
             for selection in removed_ignored_rules.iter().sorted() {
-                let (prefix, code) = selection.prefix_and_code();
-                rules.push_str("\n    - ");
-                rules.push_str(prefix);
-                rules.push_str(code);
+                write!(rules, "\n    - {:#}", selection.name_and_code()).unwrap();
             }
             rules.push('\n');
             warn_user_once_by_message!(
@@ -1172,9 +1169,9 @@ impl LintConfiguration {
 
         if preview.mode.is_disabled() {
             for selection in deprecated_selectors.iter().sorted() {
-                let (prefix, code) = selection.prefix_and_code();
                 warn_user_once_by_message!(
-                    "Rule `{prefix}{code}` is deprecated and will be removed in a future release."
+                    "Rule {:#} is deprecated and will be removed in a future release.",
+                    selection.name_and_code()
                 );
             }
         } else {
@@ -1182,10 +1179,10 @@ impl LintConfiguration {
             match deprecated_selectors.as_slice() {
                 [] => (),
                 [selection] => {
-                    let (prefix, code) = selection.prefix_and_code();
                     return Err(anyhow!(
-                        "Selection of deprecated rule `{prefix}{code}` is not allowed when \
-                         preview is enabled."
+                        "Selection of deprecated rule {:#} is not allowed when \
+                         preview is enabled.",
+                        selection.name_and_code()
                     ));
                 }
                 [..] => {
@@ -1194,10 +1191,7 @@ impl LintConfiguration {
                             when preview is enabled. Remove selection of:"
                         .to_string();
                     for selection in deprecated_selectors {
-                        let (prefix, code) = selection.prefix_and_code();
-                        message.push_str("\n\t- ");
-                        message.push_str(prefix);
-                        message.push_str(code);
+                        write!(message, "\n    - {:#}", selection.name_and_code()).unwrap();
                     }
                     message.push('\n');
                     return Err(anyhow!(message));
@@ -1206,9 +1200,9 @@ impl LintConfiguration {
         }
 
         for selection in ignored_preview_selectors.iter().sorted() {
-            let (prefix, code) = selection.prefix_and_code();
             warn_user_once_by_message!(
-                "Selection `{prefix}{code}` has no effect because preview is not enabled.",
+                "Selection {:#} has no effect because preview is not enabled.",
+                selection.name_and_code()
             );
         }
 
@@ -1773,12 +1767,14 @@ fn conflicting_import_settings(
 
     if !err_body.is_empty() {
         return Err(anyhow!(
-            "Required import specified in `lint.isort.required-imports` (I002) \
+            "Required import specified in `lint.isort.required-imports` for {missing_import:#} \
             conflicts with the required import alias specified in either \
             `lint.flake8-import-conventions.aliases` or \
-            `lint.flake8-import-conventions.extend-aliases` (ICN001):\
+            `lint.flake8-import-conventions.extend-aliases` for {import_alias:#}:\
                 \n{err_body}\n\
-            Help: Remove the required import or alias from your configuration."
+            Help: Remove the required import or alias from your configuration.",
+            missing_import = Rule::MissingRequiredImport.name_and_code(),
+            import_alias = Rule::UnconventionalImportAlias.name_and_code()
         ));
     }
 
@@ -1806,12 +1802,14 @@ fn conflicting_required_import_pyi025(
         {
             return Err(anyhow!(
                 "Required import `from collections.abc import Set` specified in \
-                `lint.isort.required-imports` (I002) conflicts with \
-                `unaliased-collections-abc-set-import` (PYI025), which requires \
+                `lint.isort.required-imports` for {missing_import:#} conflicts with \
+                {set_import:#}, which requires \
                 this import to be aliased as `AbstractSet`.\n\n\
                 Help: Either alias the required import \
                 (`from collections.abc import Set as AbstractSet`), \
-                or disable PYI025."
+                or disable {set_import:#}.",
+                missing_import = Rule::MissingRequiredImport.name_and_code(),
+                set_import = Rule::UnaliasedCollectionsAbcSetImport.name_and_code()
             ));
         }
     }
@@ -1828,7 +1826,9 @@ mod tests {
     use ruff_linter::rule_selector::PreviewOptions;
     use ruff_linter::settings::types::PreviewMode;
 
-    use crate::configuration::{LintConfiguration, RuleSelection};
+    use crate::configuration::{
+        Configuration, FormatConfiguration, LintConfiguration, RuleSelection,
+    };
     use crate::options::PydocstyleOptions;
 
     const PREVIEW_RULES: &[Rule] = &[
@@ -1837,14 +1837,14 @@ mod tests {
         Rule::ClassAsDataStructure,
         Rule::TooManyPublicMethods,
         Rule::UnnecessaryEnumerate,
-        Rule::MathConstant,
+        Rule::HardcodedMathConstant,
         Rule::PreviewTestRule,
-        Rule::BlankLineBetweenMethods,
-        Rule::BlankLinesTopLevel,
+        Rule::MissingBlankLineBeforeMethod,
+        Rule::MissingBlankLinesBeforeTopLevelDefinition,
         Rule::TooManyBlankLines,
         Rule::BlankLineAfterDecorator,
-        Rule::BlankLinesAfterFunctionOrClass,
-        Rule::BlankLinesBeforeNestedDefinition,
+        Rule::MissingBlankLinesAfterTopLevelDefinition,
+        Rule::MissingBlankLineBeforeNestedDefinition,
     ];
 
     fn resolve_rules(
@@ -2093,6 +2093,28 @@ mod tests {
             Rule::TabIndentation,
         ]);
         assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn global_preview_is_independent_of_component_preview() -> Result<()> {
+        let settings = Configuration {
+            preview: Some(PreviewMode::Enabled),
+            lint: LintConfiguration {
+                preview: Some(PreviewMode::Disabled),
+                ..LintConfiguration::default()
+            },
+            format: FormatConfiguration {
+                preview: Some(PreviewMode::Disabled),
+                ..FormatConfiguration::default()
+            },
+            ..Configuration::default()
+        }
+        .into_settings(&std::env::temp_dir())?;
+
+        assert!(settings.preview.is_enabled());
+        assert!(!settings.linter.preview.is_enabled());
+        assert!(!settings.formatter.preview.is_enabled());
         Ok(())
     }
 

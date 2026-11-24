@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow};
 use regex::Regex;
 use ruff_python_ast::visitor::source_order::{self, SourceOrderVisitor, TraversalSignal};
 use ruff_python_ast::{AnyNodeRef, ModModule, Stmt};
-use ruff_python_trivia::{BackwardsTokenizer, CommentRanges, SimpleTokenKind, leading_indentation};
+use ruff_python_trivia::{CommentRanges, SimpleTokenKind, SimpleTokenizer, leading_indentation};
 use ruff_source_file::{LineRanges, UniversalNewlines};
 use ruff_text_size::{Ranged, TextRange, TextSize};
 
@@ -94,7 +94,6 @@ impl Suppressions {
         }
         let mut collector = Statements {
             source,
-            comments,
             headers: Vec::new(),
         };
         for statement in &module.body {
@@ -209,7 +208,6 @@ fn statement_start(statement: &Stmt) -> TextSize {
 
 struct Statements<'a> {
     source: &'a str,
-    comments: &'a CommentRanges,
     headers: Vec<TextRange>,
 }
 
@@ -218,13 +216,10 @@ impl Statements<'_> {
         let end = first_body
             .filter(|body| self.source.line_start(*body) != self.source.line_start(range.start()))
             .map(|body| {
-                BackwardsTokenizer::new(
-                    self.source,
-                    TextRange::new(range.start(), body),
-                    self.comments,
-                )
-                .find(|token| token.kind() == SimpleTokenKind::Colon)
-                .map_or(body, |colon| self.source.line_end(colon.end()))
+                SimpleTokenizer::new(self.source, TextRange::new(range.start(), body))
+                    .filter(|token| token.kind() == SimpleTokenKind::Colon)
+                    .last()
+                    .map_or(body, |colon| self.source.line_end(colon.end()))
             })
             .unwrap_or_else(|| self.source.line_end(range.end()));
         self.headers.push(TextRange::new(range.start(), end));

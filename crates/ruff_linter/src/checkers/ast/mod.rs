@@ -75,8 +75,8 @@ use crate::preview::{
 use crate::registry::{LintSource, Rule};
 use crate::rules::flake8_bugbear::rules::ReturnInGenerator;
 use crate::rules::pyflakes::rules::{
-    LateFutureImport, MultipleStarredExpressions, ReturnOutsideFunction,
-    UndefinedLocalWithNestedImportStarUsage, YieldOutsideFunction,
+    LateFutureImport, MultipleStarredExpressions, NonModuleLevelStarImport, ReturnOutsideFunction,
+    YieldOutsideFunction,
 };
 use crate::rules::pylint::rules::{
     AwaitOutsideAsync, LoadBeforeGlobalDeclaration, NonlocalWithoutBinding,
@@ -818,11 +818,8 @@ impl SemanticSyntaxContext for Checker<'_> {
                 }
             }
             SemanticSyntaxErrorKind::NonModuleImportStar(name) => {
-                if self.is_rule_enabled(Rule::UndefinedLocalWithNestedImportStarUsage) {
-                    self.report_diagnostic(
-                        UndefinedLocalWithNestedImportStarUsage { name },
-                        error.range,
-                    );
+                if self.is_rule_enabled(Rule::NonModuleLevelStarImport) {
+                    self.report_diagnostic(NonModuleLevelStarImport { name }, error.range);
                 }
             }
             SemanticSyntaxErrorKind::ReturnOutsideFunction => {
@@ -2796,8 +2793,8 @@ impl<'a> Checker<'a> {
     fn visit_cast_type_argument(&mut self, arg: &'a Expr) {
         self.visit_type_definition(arg);
 
-        if !self.source_type.is_stub() && self.is_rule_enabled(Rule::RuntimeCastValue) {
-            flake8_type_checking::rules::runtime_cast_value(self, arg);
+        if !self.source_type.is_stub() && self.is_rule_enabled(Rule::CastWithUnquotedType) {
+            flake8_type_checking::rules::cast_with_unquoted_type(self, arg);
         }
     }
 
@@ -3431,9 +3428,9 @@ impl<'a> Checker<'a> {
                 } else {
                     if self.semantic.global_scope().uses_star_imports() {
                         // F405
-                        if self.is_rule_enabled(Rule::UndefinedLocalWithImportStarUsage) {
+                        if self.is_rule_enabled(Rule::PossiblyUndefinedNameWithStarImport) {
                             self.report_diagnostic(
-                                pyflakes::rules::UndefinedLocalWithImportStarUsage {
+                                pyflakes::rules::PossiblyUndefinedNameWithStarImport {
                                     name: name.to_string(),
                                 },
                                 range,

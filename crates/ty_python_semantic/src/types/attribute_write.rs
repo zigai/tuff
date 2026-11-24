@@ -17,7 +17,7 @@ use super::class::FrozenDataclassDispatch;
 use super::constraints::{ConstraintSet, IteratorConstraintsExtension, OptionConstraintsExtension};
 use super::dedicated::pydantic;
 use super::relation::TypeRelationChecker;
-use super::visitor::may_contain_typevar_from;
+use super::visitor::may_contain_typevar_matching;
 use super::{
     BindingContext, ClassBase, IntersectionType, KnownClass, KnownInstanceType, MemberLookupPolicy,
     Parameter, PropertyInstanceType, SelfBinding, Signature, Type, TypeContext, TypeMapping,
@@ -1294,7 +1294,7 @@ fn descriptor_setter<'db>(
 /// value. The receiver's type can require the same writable protocol member that this descriptor
 /// implements. Treat a recursive check of the same descriptor and receiver as provisionally
 /// successful; the outer protocol check still validates the member's read and write types.
-#[salsa::tracked(returns(copy), cycle_initial=|_, _, _, _, _| true, heap_size=ruff_memory_usage::heap_size)]
+#[salsa::tracked(returns(copy), cycle_initial=|_, _, _, _, _, _| true, heap_size=ruff_memory_usage::heap_size)]
 fn descriptor_setter_accepts_receiver<'db>(
     db: &'db dyn Db,
     program: Program<'db>,
@@ -1483,9 +1483,11 @@ fn may_contain_signature_typevar<'db>(
     signature: &Signature<'db>,
     ty: Type<'db>,
 ) -> bool {
-    signature
-        .generic_context
-        .is_some_and(|generic_context| may_contain_typevar_from(db, env, ty, generic_context))
+    signature.generic_context.is_some_and(|generic_context| {
+        may_contain_typevar_matching(db, env, ty, |typevar| {
+            generic_context.contains(db, typevar.identity(db))
+        })
+    })
 }
 
 /// Union the value parameter types accepted by a property's setter overloads.

@@ -42,10 +42,10 @@ use crate::types::visitor::{
 use crate::types::{
     ApplyTypeMappingVisitor, BindingContext, BoundTypeVarInstance, CallableType, CallableTypes,
     ClassLiteral, ErrorContext, FindLegacyTypeVarsVisitor, IntersectionType, KnownClass,
-    KnownInstanceType, MaterializationKind, RecursiveType, SelfTypeVarOrigin, SubclassOfInner,
-    Type, TypeAliasType, TypeContext, TypeMapping, TypeVarBoundOrConstraints, TypeVarKind,
-    TypeVarVariance, UnionAccumulator, UnionType, binding_type, infer_definition_types,
-    inferred_declaration,
+    KnownInstanceType, MaterializationKind, RecursiveType, RecursiveTypeNormalizer,
+    SelfTypeVarOrigin, SubclassOfInner, Type, TypeAliasType, TypeContext, TypeMapping,
+    TypeVarBoundOrConstraints, TypeVarKind, TypeVarVariance, UnionAccumulator, UnionType,
+    binding_type, infer_definition_types, inferred_declaration,
 };
 use crate::{Db, FxIndexMap, FxOrderMap, FxOrderSet};
 use ty_python_core::definition::{Definition, DefinitionKind};
@@ -568,12 +568,8 @@ impl<'db> GenericContext<'db> {
         db: &'db dyn Db,
         bound_typevar: BoundTypeVarIdentity<'db>,
     ) -> bool {
-        let bound_typevar = if bound_typevar.is_paramspec(db) {
-            bound_typevar.without_paramspec_attr(db)
-        } else {
-            bound_typevar
-        };
-        self.variables_inner(db).contains_key(&bound_typevar)
+        self.variables_inner(db)
+            .contains_key(&bound_typevar.binder())
     }
     /// Returns `true` if this generic context contains exactly one `ParamSpec` and no other type
     /// variables.
@@ -1556,28 +1552,34 @@ impl<'db> Specialization<'db> {
         div: Type<'db>,
         nested: bool,
     ) -> Option<Self> {
-        let types = if nested {
-            self.types(db)
-                .iter()
-                .map(|ty| ty.recursive_type_normalized_impl(db, env, div, true))
-                .collect::<Option<Box<[_]>>>()?
-        } else {
-            self.types(db)
-                .iter()
-                .map(|ty| {
-                    ty.recursive_type_normalized_impl(db, env, div, true)
-                        .unwrap_or(div)
-                })
-                .collect::<Box<[_]>>()
-        };
-        let tuple_inner = match self.tuple_inner(db) {
-            Some(tuple) => Some(tuple.recursive_type_normalized_impl(db, env, div, nested)?),
+        self.normalize_recursive(db, &mut RecursiveTypeNormalizer::new(env, div), nested)
+    }
+
+    pub(super) fn normalize_recursive(
+        self,
+        db: &'db dyn Db,
+        normalizer: &mut RecursiveTypeNormalizer<'_, 'db>,
+        nested: bool,
+    ) -> Option<Self> {
+        let original_types = self.types(db);
+        let mut types = Cow::Borrowed(original_types);
+        for (index, ty) in original_types.iter().enumerate() {
+            let normalized = normalizer.normalize_argument(db, *ty, nested)?;
+            if normalized != *ty {
+                types.to_mut()[index] = normalized;
+            }
+        }
+        let original_tuple_inner = self.tuple_inner(db);
+        let tuple_inner = match original_tuple_inner {
+            Some(tuple) => Some(tuple.normalize_recursive(db, normalizer, nested)?),
             None => None,
         };
-        let context = self.generic_context(db);
+        if matches!(types, Cow::Borrowed(_)) && tuple_inner == original_tuple_inner {
+            return Some(self);
+        }
         Some(Self::new(
             db,
-            context,
+            self.generic_context(db),
             types,
             self.materialization_kind(db),
             tuple_inner,
@@ -1988,9 +1990,10 @@ impl<'c, 'db> TypeRelationChecker<'_, 'c, 'db> {
             // type's materialization range, while assignability uses the type itself for both
             // bounds.
             (None, None, _) => {
-                if self.typevar_evaluation == TypeVarEvaluation::Lazy
+                if self.typevar_evaluation.is_lazy()
                     && let (Type::TypeVar(typevar), ty) | (ty, Type::TypeVar(typevar)) =
                         (source_type, target_type)
+                    && typevar.is_inferable(db, self.inferable)
                     && !ty.is_type_var()
                     && (
                         // Preserve union distribution before constructing constraints. Storing the
@@ -2001,26 +2004,25 @@ impl<'c, 'db> TypeRelationChecker<'_, 'c, 'db> {
                 {
                     let ty = ty.materialized_divergent_fallback().unwrap_or(ty);
                     let env = self.env;
-                    if self.relation.is_subtyping() {
-                        ConstraintSet::constrain_typevar(
-                            db,
-                            env,
-                            self.constraints,
-                            self.provenance,
-                            typevar,
+                    let (lower, upper) = if self.relation.is_subtyping() {
+                        (
                             ty.top_materialization(db, env),
                             ty.bottom_materialization(db, env),
                         )
                     } else {
-                        ConstraintSet::constrain_typevar_equivalence_bound(
-                            db,
-                            env,
-                            self.constraints,
-                            self.provenance,
-                            typevar,
-                            ty,
-                        )
-                    }
+                        (ty, ty)
+                    };
+                    let inferred = ConstraintSet::constrain_typevar(
+                        db,
+                        env,
+                        self.constraints,
+                        self.provenance,
+                        self.inferable,
+                        typevar,
+                        lower,
+                        upper,
+                    );
+                    self.check_declared_typevar_bounds(db, ty, typevar, inferred)
                 } else {
                     self.check_type_pair(db, target_type, source_type).and(
                         db,
@@ -2260,6 +2262,7 @@ impl<'c, 'db> DisjointnessChecker<'_, 'c, 'db> {
                             .for_new_materialization_root()
                     };
                     checker.typevar_evaluation = TypeVarEvaluation::Lazy;
+                    checker.inferable = TypeVarSet::All;
                     checker.materialization_visitor = &materialization_visitor;
                     let result = self
                         .check_relation_with_context(db, checker, |checker| {
@@ -2559,6 +2562,99 @@ impl<'db> HasIdentity<'db> for InferSpecialization<'db> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, get_size2::GetSize, salsa::SalsaValue)]
+enum UnionInference<'db> {
+    Whole,
+    Filtered(Type<'db>, Type<'db>),
+}
+
+/// Decide how to infer from these types without adding constraints to the caller's specialization.
+/// Overloads can share this decision even when they accumulate different constraints.
+#[expect(clippy::unnecessary_wraps, reason = "Salsa returns None during cycles")]
+fn union_inference<'db>(
+    db: &'db dyn Db,
+    env: &ProgramEnvironment<'db>,
+    generic_context: GenericContext<'db>,
+    formal: Type<'db>,
+    actual: Type<'db>,
+) -> UnionInference<'db> {
+    #[salsa::tracked(returns(copy), cycle_result=|_, _, _, _, _, _| None, heap_size=ruff_memory_usage::heap_size)]
+    fn cached_union_inference<'db>(
+        db: &'db dyn Db,
+        program: Program<'db>,
+        generic_context: GenericContext<'db>,
+        formal: Type<'db>,
+        actual: Type<'db>,
+    ) -> Option<UnionInference<'db>> {
+        let env = ProgramEnvironment::from_program(program);
+        Some(compute(db, &env, generic_context, formal, actual))
+    }
+
+    fn compute<'db>(
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        generic_context: GenericContext<'db>,
+        formal: Type<'db>,
+        actual: Type<'db>,
+    ) -> UnionInference<'db> {
+        let inferable = generic_context.inferable_typevars(db);
+        // Keep alternative matches in one constraint set until all arguments have contributed
+        // their evidence. Filtering either union first can discard an obligation or apply a
+        // variable's bound to an argument member that matches a different formal member.
+        // Variadic unions retain their existing inference path, as does direct gradual evidence:
+        // `Any <= T | None` is unconditional and would lose the mapping `T = Any`.
+        // Recursive aliases retain their unfolding path, which collects leaf evidence for
+        // variables in types such as `Tree[T] = T | tuple[Tree[T]]`.
+        if formal.resolve_type_alias(db).is_union()
+            && !inferable
+                .iter(db)
+                .any(|typevar| typevar.is_paramspec(db) || typevar.is_typevartuple(db))
+            && !SpecializationBuilder::requires_memberwise_union_inference(db, env, formal, actual)
+        {
+            return UnionInference::Whole;
+        }
+
+        // Remove the union elements from `actual` that are not related to `formal`, and vice
+        // versa.
+        //
+        // For example, if `formal` is `list[T]` and `actual` is `list[int] | None`, we want to
+        // specialize `T` to `int`, and so ignore the `None`.
+        //
+        // Replace inferable variables with `Unknown` for this filter to avoid solving
+        // specialization constraints separately for each actual union member. Inference below
+        // uses the original formal type to determine the specialization and validate its bounds.
+        //
+        // If no elements survive, keep the original union: inferring from `Never` would discard
+        // its type variables and skip the bound checks that reject the argument.
+        let actual = if actual.resolve_type_alias(db).is_union() {
+            let formal =
+                formal.apply_specialization(db, generic_context.unknown_specialization(db, None));
+            actual
+                .discard_disjoint_union_elements(db, env, formal, inferable)
+                .unless_all_disjoint(actual)
+        } else {
+            actual
+        };
+        // Ignore inferable variables' bounds when deciding which formal members can match.
+        // `list[T]` must survive a comparison with `list[object]` even if `T: str`, so that
+        // inference can report the bound violation. It can still be discarded when the
+        // argument is `str | None`, since no specialization of `list[T]` can match it.
+        let disjoint_constraints = ConstraintSetBuilder::new();
+        let formal = formal.filter_union(db, env, |element| {
+            !element
+                .apply_specialization(db, generic_context.unknown_specialization(db, None))
+                .when_disjoint_from(db, env, actual, &disjoint_constraints, inferable)
+                .is_always_satisfied(db, env, inferable)
+        });
+
+        UnionInference::Filtered(formal, actual)
+    }
+
+    // Recompute against the current provisional types while resolving a cycle.
+    cached_union_inference(db, env.program(db), generic_context, formal, actual)
+        .unwrap_or_else(|| compute(db, env, generic_context, formal, actual))
+}
+
 /// Performs type inference between parameter annotations and argument types, producing a
 /// specialization of a generic function.
 pub(crate) struct SpecializationBuilder<'db, 'c> {
@@ -2618,7 +2714,7 @@ impl<'db> TypeVarInference<'db> {
     pub(crate) fn merged_specialization(self, db: &'db dyn Db) -> Specialization<'db> {
         #[salsa::tracked(
             returns(copy),
-            cycle_initial=|db, _, inference: TypeVarInference<'db>| {
+            cycle_initial=|db, _, _, inference: TypeVarInference<'db>| {
                 inference.generic_context(db).unknown_specialization(db, None)
             },
             cycle_fn=|db, cycle: &salsa::Cycle, previous: &Specialization<'db>, current: Specialization<'db>, inference: TypeVarInference<'db>| {
@@ -2939,8 +3035,11 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
     ) -> TypeVarInference<'db> {
         let db = self.db;
         for (formal, actual) in argument_relations {
-            let when =
-                actual.when_constraint_set_assignable_to(db, self.env, formal, self.constraints);
+            // Once a relation exceeds the budget, later arguments can't restore the mapping.
+            if matches!(self.types, LegacyTypeMappings::BudgetExceeded) {
+                break;
+            }
+            let when = self.constraint_for_relation(formal, actual, TypeVarVariance::Covariant);
             let analysis = self.analyze_constraint_set(when);
             if matches!(&analysis, ConstraintSetAnalysis::Unsatisfiable(failures) if failures.is_empty())
                 && let Type::Union(actual_union) = actual.resolve_type_alias(db)
@@ -3155,10 +3254,7 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
         // constraints; combined with `_KT@dict = Hashable`, PathAssignments/SequentMap traversal
         // derives cross-typevar facts such as `TypedDictSchema <= _VT@dict <= Hashable`.
         //
-        // A naive fast path that skipped `remove_noninferable` when no constraint would be removed
-        // was not enough: `solutions_with` still performed the expensive path traversal, and the
-        // skipped projection changed precision in LiteralString tests. See the
-        // `ty_micro[pydantic_core_schema_dict]` benchmark for a minimized reproducer.
+        // See the `ty_micro[pydantic_core_schema_dict]` benchmark for a minimized reproducer.
         let mut inference = match project(self, choose) {
             Ok(SolutionProjection::Unsatisfiable) => return Err(()),
             Ok(SolutionProjection::Unconstrained) => {
@@ -3345,18 +3441,16 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
         ty: Type<'db>,
     ) -> bool {
         let db = self.db;
-        let target_context = target.binding_context(db);
-        let target_freshness = target.freshness(db);
+        let target = target.identity(db);
         ty.as_typevar().is_some_and(|typevar| {
             // Relationships across binding contexts can intentionally remap one generic context
             // onto another, as with constructor `self` annotations. Relationships across fresh
             // occurrences preserve an outer generic value through a recursive call. Synthetic
             // contexts do not identify a single source-level binding, so they are not safe to
             // project either.
-            !matches!(target_context, BindingContext::Synthetic(_))
+            !matches!(target.binding_context(db), BindingContext::Synthetic(_))
                 && typevar.is_inferable(db, self.inferable)
-                && typevar.binding_context(db) == target_context
-                && typevar.freshness(db) == target_freshness
+                && typevar.identity(db).shares_binding(target)
         })
     }
 
@@ -3591,6 +3685,7 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
                 self.env,
                 self.constraints,
                 ConstraintProvenance::INFERRED,
+                self.inferable,
                 bound_typevar,
                 ty,
             ),
@@ -3599,6 +3694,7 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
                 self.env,
                 self.constraints,
                 ConstraintProvenance::INFERRED,
+                self.inferable,
                 bound_typevar,
                 ty,
             ),
@@ -3607,6 +3703,7 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
                 self.env,
                 self.constraints,
                 ConstraintProvenance::INFERRED,
+                self.inferable,
                 bound_typevar,
                 ty,
             ),
@@ -3738,7 +3835,12 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
             db,
             self.constraints,
             |(source, target)| {
-                let when = source.when_constraint_set_assignable_to_owned(db, self.env, target);
+                let when = source.when_constraint_set_assignable_to_owned(
+                    db,
+                    self.env,
+                    target,
+                    self.inferable,
+                );
                 self.constraints.load(db, self.env, &when)
             },
         )
@@ -3907,18 +4009,17 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
         // when a `TypedDict` preserves more precise correlations between its keys and values.
         let spec = &[KnownClass::Str.to_instance(db, env), Type::object()];
         let mapping = KnownClass::Mapping.to_specialized_instance(db, env, spec);
-        let mapping_when = mapping.when_constraint_set_assignable_to_owned(db, env, formal);
-        let mapping_when = self.constraints.load(db, env, &mapping_when);
+        let when_assignable_to_formal = |ty: Type<'db>| {
+            let when = ty.when_constraint_set_assignable_to_owned(db, env, formal, self.inferable);
+            self.constraints.load(db, env, &when)
+        };
+        let mapping_when = when_assignable_to_formal(mapping);
         // Logically equivalent constraints can still infer different solutions, such as `Any`
         // instead of `object`; preserve the original constraints when gradual evidence differs
         // or either solution collection exceeds its budget.
         let mapping_solutions = mapping_when.solutions(db, env, self.inferable).ok()?;
         if !typed_dicts.into_iter().all(|element| {
-            let element_when = self.constraints.load(
-                db,
-                env,
-                &element.when_constraint_set_assignable_to_owned(db, env, formal),
-            );
+            let element_when = when_assignable_to_formal(element);
             element_when.is_equivalent_to(db, env, mapping_when, self.inferable)
                 && element_when
                     .solutions(db, env, self.inferable)
@@ -3932,13 +4033,7 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
         Some(mapping_when.and(db, self.constraints, || {
             other_types
                 .into_iter()
-                .when_all(db, self.constraints, |element| {
-                    self.constraints.load(
-                        db,
-                        env,
-                        &element.when_constraint_set_assignable_to_owned(db, env, formal),
-                    )
-                })
+                .when_all(db, self.constraints, when_assignable_to_formal)
         }))
     }
 
@@ -3966,14 +4061,13 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
         let formal_is_single_paramspec = formal_signature.is_single_paramspec().is_some();
         for actual_callable in &actual_callables {
             if formal_is_single_paramspec {
-                let when = actual_callable
-                    .signatures(db)
-                    .when_constraint_set_assignable_to(
-                        db,
-                        self.env,
-                        formal_signature,
-                        self.constraints,
-                    );
+                let when = formal_signature.when_constraint_set_assignable_from(
+                    db,
+                    self.env,
+                    &actual_callable.signatures(db).overloads,
+                    self.constraints,
+                    self.inferable,
+                );
                 self.infer_from_constraint_set(when)?;
             } else {
                 // An overloaded actual callable is compatible if at least one overload matches.
@@ -3986,11 +4080,12 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
                 let mut accepted =
                     SmallVec::<[(ConstraintSet<'db, 'c>, ConstraintSetAnalysis<'db>); 1]>::new();
                 for actual_signature in &actual_callable.signatures(db).overloads {
-                    let when = actual_signature.when_constraint_set_assignable_to_signatures(
+                    let when = formal_signature.when_constraint_set_assignable_from(
                         db,
                         &env,
-                        formal_signature,
+                        std::slice::from_ref(actual_signature),
                         constraints,
+                        self.inferable,
                     );
                     let analysis = self.analyze_constraint_set(when);
                     match analysis {
@@ -4037,25 +4132,53 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
         )
     }
 
-    /// Conservatively checks whether union matching may discard gradual evidence.
+    /// Checks whether recursion or gradual evidence requires matching union members separately.
     ///
     /// The formal type limits which gradual types we look for in the actual type; we do not
     /// match corresponding positions to determine whether that evidence reaches a type variable.
-    fn has_gradual_union_evidence(&self, formal: Type<'db>, actual: Type<'db>) -> bool {
-        let db = self.db;
-        let formal = formal.resolve_type_alias(db);
+    fn requires_memberwise_union_inference(
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        formal: Type<'db>,
+        actual: Type<'db>,
+    ) -> bool {
+        let union = formal.resolve_type_alias(db);
+        let has_nested_union = Cell::new(false);
+        let instances = RefCell::new(FxOrderSet::default());
+
+        // Only a base that appears in the formal type can contribute inherited gradual
+        // evidence. Collect instances while checking for recursion, but look up their
+        // classes only if we encounter a generic base of the argument. For example,
+        // looking up the class of a tuple requires specializing it with its element types.
+        let recursive = any_over_type_expanding_aliases(db, env, formal, |ty| {
+            match ty {
+                Type::Recursive(_) => return true,
+                Type::Union(_) if ty != union => has_nested_union.set(true),
+                Type::NominalInstance(_) | Type::ProtocolInstance(_) => {
+                    instances.borrow_mut().insert(ty);
+                }
+                _ => {}
+            }
+            false
+        });
+        if recursive {
+            return true;
+        }
+
         // `Box[Any] <= Box[T | None] | int` loses the nested `Any` before reaching `T`, too.
         // Keep this compatibility case until relations preserve gradual evidence. A plain
         // `Box[T] | int` can infer `Any` directly, and a concrete `dict[str, Any]` arm must not
         // prevent inference from other members of an argument union.
-        if any_over_type_expanding_aliases(db, self.env, formal, |nested| {
-            nested != formal && nested.is_union()
-        }) && self.has_nested_gradual_evidence(
-            formal,
-            actual,
-            &RefCell::default(),
-            &ActiveRecursionDetector::default(),
-        ) {
+        if has_nested_union.get()
+            && Self::has_nested_gradual_evidence(
+                db,
+                env,
+                &instances.into_inner(),
+                actual,
+                &RefCell::default(),
+                &ActiveRecursionDetector::default(),
+            )
+        {
             return true;
         }
 
@@ -4080,13 +4203,13 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
                     if !seen_recursive_types.insert(actual.to_type_identity(db)) {
                         return true;
                     }
-                    pending.push(recursive.unfold(db, self.env).into_type());
+                    pending.push(recursive.unfold(db, env).into_type());
                 }
                 Type::Union(union) => pending.extend(union.elements(db).iter().copied()),
                 Type::Intersection(intersection) => pending.extend(intersection.iter_positive(db)),
                 Type::NominalInstance(instance)
                     if instance
-                        .class(db, self.env)
+                        .class(db, env)
                         .iter_mro(db)
                         .any(|base| matches!(base, ClassBase::Any | ClassBase::Dynamic(_))) =>
                 {
@@ -4099,17 +4222,23 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
     }
 
     fn has_nested_gradual_evidence(
-        &self,
-        formal: Type<'db>,
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        instances: &FxOrderSet<Type<'db>>,
         actual: Type<'db>,
         seen_classes: &RefCell<FxHashSet<ClassType<'db>>>,
         active_classes: &ActiveRecursionDetector<ClassLiteral<'db>>,
     ) -> bool {
-        let db = self.db;
-        any_over_type_expanding_aliases(db, self.env, actual, |nested| match nested {
+        let in_formal = |origin| {
+            instances.iter().any(|ty| {
+                ty.nominal_class(db, env)
+                    .is_some_and(|class| class.class_literal(db) == origin)
+            })
+        };
+        any_over_type_expanding_aliases(db, env, actual, |nested| match nested {
             Type::Dynamic(_) => true,
             Type::NominalInstance(instance) => {
-                let class = instance.class(db, self.env);
+                let class = instance.class(db, env);
                 // Exact recursion adds no evidence, as when `str` inherits `Sequence[str]`.
                 if !seen_classes.borrow_mut().insert(class) {
                     return false;
@@ -4125,31 +4254,15 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
                         class.iter_mro(db).skip(1).any(|base| match base {
                             ClassBase::Any | ClassBase::Dynamic(_) => true,
                             ClassBase::Class(ClassType::Generic(base))
-                                if any_over_type_expanding_aliases(
-                                    db,
-                                    self.env,
-                                    formal,
-                                    |ty| {
-                                        let origin = ClassLiteral::Static(base.origin(db));
-                                        match ty {
-                                            Type::NominalInstance(instance) => {
-                                                instance.class_literal(db, self.env) == origin
-                                            }
-                                            Type::ProtocolInstance(protocol) => {
-                                                protocol.class_origin(db).is_some_and(|class| {
-                                                    class.class_literal(db) == origin
-                                                })
-                                            }
-                                            _ => false,
-                                        }
-                                    },
-                                ) =>
+                                if in_formal(ClassLiteral::Static(base.origin(db))) =>
                             {
                                 // Only bases present in the formal type can supply this evidence:
                                 // `str` inheriting `Container[Any]` does not make it gradual here.
                                 base.specialization(db).types(db).iter().any(|&ty| {
-                                    self.has_nested_gradual_evidence(
-                                        formal,
+                                    Self::has_nested_gradual_evidence(
+                                        db,
+                                        env,
+                                        instances,
                                         ty,
                                         seen_classes,
                                         active_classes,
@@ -4205,61 +4318,19 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
         // possible when adding any new heuristics here. See the `Callable` clause below for an
         // example.
 
-        let has_variadic = self
-            .inferable
-            .iter(db)
-            .any(|typevar| typevar.is_paramspec(db) || typevar.is_typevartuple(db));
-
-        // Keep alternative matches in one constraint set until all arguments have contributed
-        // their evidence. Filtering either union first can discard an obligation or apply a
-        // variable's bound to an argument member that matches a different formal member.
-        // Variadic unions retain their existing inference path, as does direct gradual evidence:
-        // `Any <= T | None` is unconditional and would lose the mapping `T = Any`.
-        // Recursive aliases retain their unfolding path, which collects leaf evidence for
-        // variables in types such as `Tree[T] = T | tuple[Tree[T]]`.
-        if formal.resolve_type_alias(db).is_union()
-            && !has_variadic
-            && !any_over_type_expanding_aliases(db, self.env, formal, |nested| {
-                matches!(nested, Type::Recursive(_))
-            })
-            && !self.has_gradual_union_evidence(formal, actual)
+        let (formal, actual) = if formal.resolve_type_alias(db).is_union()
+            || actual.resolve_type_alias(db).is_union()
         {
-            let when = self.constraint_for_relation(formal, actual, polarity);
-            return self.infer_from_constraint_set(when);
-        }
-
-        // Remove the union elements from `actual` that are not related to `formal`, and vice
-        // versa.
-        //
-        // For example, if `formal` is `list[T]` and `actual` is `list[int] | None`, we want to
-        // specialize `T` to `int`, and so ignore the `None`.
-        //
-        // Replace inferable variables with `Unknown` for this filter to avoid solving
-        // specialization constraints separately for each actual union member. Inference below
-        // uses the original formal type to determine the specialization and validate its bounds.
-        //
-        // If no elements survive, keep the original union: inferring from `Never` would discard
-        // its type variables and skip the bound checks that reject the argument.
-        let actual = if actual.resolve_type_alias(db).is_union() {
-            let formal = formal
-                .apply_specialization(db, self.generic_context.unknown_specialization(db, None));
-            actual
-                .discard_disjoint_union_elements(db, self.env, formal, self.inferable)
-                .unless_all_disjoint(actual)
+            match union_inference(db, self.env, self.generic_context, formal, actual) {
+                UnionInference::Whole => {
+                    let when = self.constraint_for_relation(formal, actual, polarity);
+                    return self.infer_from_constraint_set(when);
+                }
+                UnionInference::Filtered(formal, actual) => (formal, actual),
+            }
         } else {
-            actual
+            (formal, actual)
         };
-        // Ignore inferable variables' bounds when deciding which formal members can match.
-        // `list[T]` must survive a comparison with `list[object]` even if `T: str`, so that
-        // inference can report the bound violation. It can still be discarded when the
-        // argument is `str | None`, since no specialization of `list[T]` can match it.
-        let disjoint_constraints = ConstraintSetBuilder::new();
-        let formal = formal.filter_union(db, self.env, |element| {
-            !element
-                .apply_specialization(db, self.generic_context.unknown_specialization(db, None))
-                .when_disjoint_from(db, self.env, actual, &disjoint_constraints, self.inferable)
-                .is_always_satisfied(db, self.env, self.inferable)
-        });
 
         // Parameter-list inference extracts the actual signature's shape, including a
         // Concatenate tail. Argument validation separately checks the enclosing variance.
@@ -4471,14 +4542,8 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
                     .iter()
                     .map(|formal_element| {
                         let matches = !actual
-                            .when_assignable_to(
-                                db,
-                                self.env,
-                                *formal_element,
-                                self.constraints,
-                                self.inferable,
-                            )
-                            .is_never_satisfied(db, self.env, self.inferable);
+                            .when_assignable_to_owned(db, self.env, *formal_element, self.inferable)
+                            .query(|_, when| when.is_never_satisfied(db, self.env, self.inferable));
 
                         (formal_element, matches)
                     })
@@ -4862,11 +4927,14 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
                                         db,
                                         self.env,
                                         Type::ProtocolInstance(target),
+                                        self.inferable,
                                     )
                             } else {
                                 Cow::Borrowed(
                                     source.when_non_recursive_members_assignable_to_owned(
-                                        db, target,
+                                        db,
+                                        target,
+                                        self.inferable,
                                     )?,
                                 )
                             };
@@ -5163,6 +5231,7 @@ mod tests {
                         &env,
                         constraints,
                         ConstraintProvenance::INFERRED,
+                        TypeVarSet::All,
                         typevar,
                         ty,
                     )
@@ -5346,6 +5415,7 @@ mod tests {
             &env,
             &constraints,
             ConstraintProvenance::INFERRED,
+            TypeVarSet::All,
             t,
             int,
         ));
@@ -5403,6 +5473,7 @@ mod tests {
                 &env,
                 &constraints,
                 ConstraintProvenance::INFERRED,
+                TypeVarSet::All,
                 t,
                 ty,
             ));
@@ -5444,6 +5515,7 @@ mod tests {
                 &env,
                 &constraints,
                 ConstraintProvenance::INFERRED,
+                TypeVarSet::All,
                 t,
                 ty,
             )
@@ -5510,6 +5582,7 @@ mod tests {
                 &env,
                 &constraints,
                 ConstraintProvenance::INFERRED,
+                TypeVarSet::All,
                 t,
                 ty,
             )
@@ -5586,6 +5659,7 @@ mod tests {
                 &env,
                 &constraints,
                 ConstraintProvenance::INFERRED,
+                TypeVarSet::All,
                 t,
                 ty,
             )
@@ -5735,6 +5809,7 @@ mod tests {
             &env,
             &constraints,
             ConstraintProvenance::INFERRED,
+            TypeVarSet::All,
             t,
             int,
             int,
@@ -5908,6 +5983,7 @@ mod tests {
             &env,
             &constraints,
             ConstraintProvenance::INFERRED,
+            TypeVarSet::All,
             typevar,
             int,
         );
@@ -5955,6 +6031,7 @@ mod tests {
             &env,
             &constraints,
             ConstraintProvenance::INFERRED,
+            TypeVarSet::All,
             typevar,
             ty,
         );
@@ -6002,6 +6079,7 @@ mod tests {
             &env,
             &constraints,
             ConstraintProvenance::INFERRED,
+            TypeVarSet::All,
             typevar,
             str,
         );
@@ -6010,6 +6088,7 @@ mod tests {
             &env,
             &constraints,
             ConstraintProvenance::INFERRED,
+            TypeVarSet::All,
             typevar,
             str,
         );
@@ -6018,6 +6097,7 @@ mod tests {
             &env,
             &constraints,
             ConstraintProvenance::INFERRED,
+            TypeVarSet::All,
             typevar,
             int,
         );

@@ -92,6 +92,18 @@ pub(crate) enum LiteralValueTypeKind<'db> {
     Bytes(BytesLiteralType<'db>),
 }
 
+impl LiteralValueTypeKind<'_> {
+    pub(super) fn known_class(self) -> Option<KnownClass> {
+        match self {
+            Self::Int(_) => Some(KnownClass::Int),
+            Self::Bool(_) => Some(KnownClass::Bool),
+            Self::String(_) | Self::LiteralString => Some(KnownClass::Str),
+            Self::Bytes(_) => Some(KnownClass::Bytes),
+            Self::Enum(_) => None,
+        }
+    }
+}
+
 impl<'db> LiteralValueType<'db> {
     pub(crate) fn new(
         kind: impl Into<LiteralValueTypeKind<'db>>,
@@ -113,6 +125,11 @@ impl<'db> LiteralValueType<'db> {
             | LiteralValueTypeInner::Bytes(_, f)
             | LiteralValueTypeInner::LiteralString(f) => f,
         }
+    }
+
+    /// Whether the two literals have the same promotion and recursion flags.
+    pub(super) fn has_same_flags(self, other: Self) -> bool {
+        self.flags() == other.flags()
     }
 
     fn map_flags(self, func: impl FnOnce(LiteralFlags) -> LiteralFlags) -> Self {
@@ -239,6 +256,17 @@ impl<'db> LiteralValueType<'db> {
         } else {
             None
         }
+    }
+
+    /// Whether this literal represents a single built-in value.
+    pub(super) fn is_concrete_builtin(self) -> bool {
+        matches!(
+            self.kind(),
+            LiteralValueTypeKind::Int(_)
+                | LiteralValueTypeKind::Bool(_)
+                | LiteralValueTypeKind::String(_)
+                | LiteralValueTypeKind::Bytes(_)
+        )
     }
 
     pub(crate) fn is_int(self) -> bool {
@@ -548,10 +576,8 @@ impl<'db> WideLiteralComparison<'db> {
 
     fn comparison_class(db: &'db dyn Db, ty: Type<'db>) -> Option<KnownClass> {
         match ty.as_literal_value_kind() {
-            Some(LiteralValueTypeKind::String(_)) => Some(KnownClass::Str),
-            Some(LiteralValueTypeKind::Bytes(_)) => Some(KnownClass::Bytes),
-            Some(LiteralValueTypeKind::Int(_)) => Some(KnownClass::Int),
-            Some(LiteralValueTypeKind::Bool(_)) => Some(KnownClass::Bool),
+            Some(LiteralValueTypeKind::LiteralString) => None,
+            Some(literal) => literal.known_class(),
             // Both boolean literals together simplify to `bool`.
             None if ty.is_bool(db) => Some(KnownClass::Bool),
             None if ty.is_none(db) => Some(KnownClass::NoneType),

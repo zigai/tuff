@@ -83,13 +83,15 @@ fn noqa_hover(
         .tokens()
         .at_offset(cursor)
         .find(|token| token.kind() == TokenKind::Comment)?;
-    let (identifier_range, output) = if let Some(tuff_ignore) = python_rules::ignore_comment_hover(
-        document.contents(),
-        comment.range(),
-        cursor,
-        snapshot.query().settings(),
-        format_rule_text,
-    ) {
+    let (identifier_range, output) = if let Ok(settings) = snapshot.query().settings()
+        && let Some(tuff_ignore) = python_rules::ignore_comment_hover(
+            document.contents(),
+            comment.range(),
+            cursor,
+            settings,
+            format_rule_text,
+        )
+    {
         tuff_ignore
     } else {
         let identifier_range =

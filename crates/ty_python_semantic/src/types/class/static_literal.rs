@@ -9,9 +9,9 @@ use ruff_db::{
 use ruff_python_ast as ast;
 use ruff_python_ast::{PythonVersion, name::Name};
 use ruff_text_size::{Ranged, TextRange};
-use std::cell::RefCell;
+use std::cell::{LazyCell, RefCell};
 
-use super::implicit_attributes::implicit_attribute_names;
+use super::implicit_attributes::{ClassMemberSources, implicit_attribute_names};
 use crate::{
     Db, FxIndexMap, FxIndexSet, TypeQualifiers,
     place::{
@@ -21,13 +21,13 @@ use crate::{
     },
     reachability::{DeclarationsIteratorExtension, ReachabilityConstraintsExtension},
     types::{
-        ApplyTypeMappingVisitor, BoundTypeVarIdentity, BoundTypeVarInstance, CallArguments,
-        CallableType, ClassBase, ClassLiteral, ClassType, DATACLASS_FLAGS, DataclassFlags,
-        DataclassParams, GenericAlias, GenericContext, KnownClass, KnownInstanceType,
-        MaterializationKind, MemberLookupPolicy, MetaclassCandidate, MetaclassTransformInfo,
-        Parameter, Parameters, PropertyInstanceType, SelfTypeVarOrigin, Signature, SpecialFormType,
-        StaticMroError, SubclassOfType, Type, TypeContext, TypeMapping, TypeVarVariance,
-        TypingModule, UnionBuilder, UnionType,
+        ApplyTypeMappingVisitor, BindingContext, BoundTypeVarIdentity, BoundTypeVarInstance,
+        CallArguments, CallableType, ClassBase, ClassLiteral, ClassType, DATACLASS_FLAGS,
+        DataclassFlags, DataclassParams, GenericAlias, GenericContext, KnownClass,
+        KnownInstanceType, MaterializationKind, MemberLookupPolicy, MetaclassCandidate,
+        MetaclassTransformInfo, Parameter, Parameters, PropertyInstanceType, SelfTypeVarOrigin,
+        Signature, SpecialFormType, StaticMroError, SubclassOfType, Type, TypeContext, TypeMapping,
+        TypeVarVariance, TypingModule, UnionBuilder, UnionType,
         attribute_write::DescriptorSetterDomain,
         bound_super::BoundSuperType,
         call::{CallError, CallErrorKind},
@@ -40,7 +40,7 @@ use crate::{
             typed_dict::{TypedDictFields, synthesize_typed_dict_method, typed_dict_class_member},
         },
         context::InferContext,
-        dedicated::{django, pydantic},
+        dedicated::{attrs, django, pydantic},
         definition_expression_type, determine_self_class,
         diagnostic::INVALID_DATACLASS_OVERRIDE,
         enums::{enum_metadata, is_enum_class_by_inheritance, try_unwrap_nonmember_value},
@@ -209,6 +209,14 @@ struct OwnClassFields<'db> {
     class_variables: Box<[Name]>,
 }
 
+/// Class-wide inputs shared by lookups of different names and specializations.
+#[derive(Debug, Eq, PartialEq, get_size2::GetSize, salsa::SalsaValue)]
+struct ClassNamespace<'db> {
+    sources: ClassMemberSources<'db>,
+    generator: Option<CodeGeneratorKind<'db>>,
+    may_have_slot_descriptors: bool,
+}
+
 #[salsa::tracked]
 impl<'db> StaticClassLiteral<'db> {
     pub(crate) fn known(self, db: &'db dyn Db) -> Option<KnownClass> {
@@ -263,10 +271,10 @@ impl<'db> StaticClassLiteral<'db> {
 
     /// Returns `true` if this class is decorated with `@dataclass(order=True)`.
     pub(crate) fn is_ordered_dataclass(self, db: &'db dyn Db) -> bool {
-        self.find_dataclass_decorator_position(db).is_some()
-            && self
-                .dataclass_params(db)
-                .is_some_and(|params| params.flags(db).contains(DataclassFlags::ORDER))
+        // Looking for the decorator can reparse the class's module.
+        self.dataclass_params(db)
+            .is_some_and(|params| params.flags(db).contains(DataclassFlags::ORDER))
+            && self.find_dataclass_decorator_position(db).is_some()
     }
 
     /// Returns a new [`StaticClassLiteral`] with the given dataclass params, preserving all other fields.
@@ -373,7 +381,7 @@ impl<'db> StaticClassLiteral<'db> {
 
     #[salsa::tracked(
         returns(copy),
-        cycle_initial=|_, _, _| None,
+        cycle_initial=|_, _, _, _| None,
         heap_size=ruff_memory_usage::heap_size,
     )]
     pub(crate) fn generic_context(self, db: &'db dyn Db) -> Option<GenericContext<'db>> {
@@ -421,7 +429,7 @@ impl<'db> StaticClassLiteral<'db> {
 
     #[salsa::tracked(
         returns(copy),
-        cycle_initial=|_, _, _| None,
+        cycle_initial=|_, _, _, _| None,
         heap_size=ruff_memory_usage::heap_size,
     )]
     fn pep695_generic_context_inner(self, db: &'db dyn Db) -> Option<GenericContext<'db>> {
@@ -479,7 +487,7 @@ impl<'db> StaticClassLiteral<'db> {
     ) -> Option<GenericContext<'db>> {
         #[salsa::tracked(
             returns(copy),
-            cycle_initial=|_, _, _| None,
+            cycle_initial=|_, _, _, _| None,
             heap_size=ruff_memory_usage::heap_size,
         )]
         fn inherited_legacy_generic_context_inner<'db>(
@@ -706,7 +714,12 @@ impl<'db> StaticClassLiteral<'db> {
     /// Were this not a salsa query, then the calling query
     /// would depend on the class's AST and rerun for every change in that file.
     pub(crate) fn explicit_bases(self, db: &'db dyn Db) -> &'db [Type<'db>] {
-        #[salsa::tracked(returns(deref), cycle_initial=explicit_bases_cycle_initial, cycle_fn=explicit_bases_cycle_fn, heap_size=ruff_memory_usage::heap_size)]
+        #[salsa::tracked(
+            returns(deref),
+            cycle_initial=|db, id, _, input| explicit_bases_cycle_initial(db, id, input),
+            cycle_fn=explicit_bases_cycle_fn,
+            heap_size=ruff_memory_usage::heap_size,
+        )]
         fn explicit_bases_inner<'db>(
             db: &'db dyn Db,
             class: StaticClassLiteral<'db>,
@@ -819,7 +832,7 @@ impl<'db> StaticClassLiteral<'db> {
         self.decorators_inner(db)
     }
 
-    #[salsa::tracked(returns(deref), cycle_initial=|_, _, _| Box::default(), heap_size=ruff_memory_usage::heap_size)]
+    #[salsa::tracked(returns(deref), cycle_initial=|_, _, _, _| Box::default(), heap_size=ruff_memory_usage::heap_size)]
     fn decorators_inner(self, db: &'db dyn Db) -> Box<[Type<'db>]> {
         tracing::trace!("StaticClassLiteral::decorators: {}", self.name(db));
 
@@ -921,7 +934,7 @@ impl<'db> StaticClassLiteral<'db> {
 
         #[salsa::tracked(
             returns(as_ref),
-            cycle_initial=mro_ancestors_cycle_initial,
+            cycle_initial=|db, id, _, input| mro_ancestors_cycle_initial(db, id, input),
             heap_size=ruff_memory_usage::heap_size
         )]
         fn named_tuple_ancestors<'db>(
@@ -968,7 +981,7 @@ impl<'db> StaticClassLiteral<'db> {
 
     #[salsa::tracked(
         returns(as_ref),
-        cycle_initial=mro_ancestors_cycle_initial,
+        cycle_initial=|db, id, _, input| mro_ancestors_cycle_initial(db, id, input),
         heap_size=ruff_memory_usage::heap_size
     )]
     fn try_mro_ancestors_unspecialized(
@@ -1056,7 +1069,7 @@ impl<'db> StaticClassLiteral<'db> {
     pub(super) fn instance_flags(self, db: &'db dyn Db) -> ClassInstanceFlags {
         #[salsa::tracked(
             returns(copy),
-            cycle_initial=|_, _, _| ClassInstanceFlags::empty(),
+            cycle_initial=|_, _, _, _| ClassInstanceFlags::empty(),
             heap_size=ruff_memory_usage::heap_size,
         )]
         fn instance_flags_inner<'db>(
@@ -1107,7 +1120,7 @@ impl<'db> StaticClassLiteral<'db> {
     }
 
     /// Return the module defining the `TypedDict` base of this class.
-    #[salsa::tracked(returns(copy), cycle_initial=|_, _, _| None, heap_size=ruff_memory_usage::heap_size)]
+    #[salsa::tracked(returns(copy), cycle_initial=|_, _, _, _| None, heap_size=ruff_memory_usage::heap_size)]
     pub(crate) fn typed_dict_module(self, db: &'db dyn Db) -> Option<TypingModule> {
         self.iter_mro(db, None)
             .find_map(ClassBase::typed_dict_module)
@@ -1316,7 +1329,7 @@ impl<'db> StaticClassLiteral<'db> {
     {
         #[salsa::tracked(
             returns(clone),
-            cycle_initial=|_, _, _| Err(MetaclassError {
+            cycle_initial=|_, _, _, _| Err(MetaclassError {
                 kind: MetaclassErrorKind::Cycle,
             }),
             heap_size=ruff_memory_usage::heap_size,
@@ -1619,6 +1632,28 @@ impl<'db> StaticClassLiteral<'db> {
         member
     }
 
+    /// Collects the namespace and generated-member sources for a class lookup.
+    #[salsa::tracked(
+        returns(ref),
+        cycle_initial=|db, _, _, class: StaticClassLiteral<'db>| ClassNamespace {
+            sources: class.member_sources(db).clone(),
+            generator: None,
+            may_have_slot_descriptors: true,
+        },
+        heap_size=ruff_memory_usage::heap_size
+    )]
+    fn class_namespace(self, db: &'db dyn Db) -> ClassNamespace<'db> {
+        let generator = CodeGeneratorKind::from_static_class(db, self);
+        // Both explicit and generated slot names can depend on members of this class.
+        // Defer resolving them until we check for a descriptor.
+        let may_have_slot_descriptors = generator.is_some() || self.has_explicit_slots(db);
+        ClassNamespace {
+            sources: self.member_sources(db).clone(),
+            generator,
+            may_have_slot_descriptors,
+        }
+    }
+
     /// Returns the inferred type of the class member named `name`. Only bound members
     /// or those marked as `ClassVars` are considered.
     ///
@@ -1655,7 +1690,8 @@ impl<'db> StaticClassLiteral<'db> {
             }
         }
 
-        let code_generator = CodeGeneratorKind::from_static_class(db, self);
+        let namespace = self.class_namespace(db);
+        let code_generator = namespace.generator;
         if code_generator.is_some_and(CodeGeneratorKind::is_dataclass_like) {
             if name == "__dataclass_fields__" {
                 // Make this class look like a subclass of the `DataClassInstance` protocol
@@ -1695,7 +1731,7 @@ impl<'db> StaticClassLiteral<'db> {
             }
         }
 
-        let sources = self.member_sources(db);
+        let sources = &namespace.sources;
         let symbol = sources.table.symbol_id(name);
         let member = class_member_with_symbol(db, sources.scope, symbol).map_type(|ty| {
             let ty = ty.freshen_member_for_owner_specialization(db, env, specialization);
@@ -1729,7 +1765,7 @@ impl<'db> StaticClassLiteral<'db> {
             }
         });
 
-        if self.has_own_slot_descriptor(db, name) {
+        if namespace.may_have_slot_descriptors && self.has_own_slot_descriptor(db, name) {
             return Member::definitely_declared(self.own_slot_descriptor(
                 db,
                 env,
@@ -1865,7 +1901,7 @@ impl<'db> StaticClassLiteral<'db> {
         })
     }
 
-    fn own_generated_member(
+    pub(in crate::types) fn own_generated_member(
         self,
         db: &'db dyn Db,
         env: &ProgramEnvironment<'db>,
@@ -1938,24 +1974,37 @@ impl<'db> StaticClassLiteral<'db> {
         }
 
         let field_policy = code_generator()?;
-        let pydantic_constructor_fields_are_keyword_only =
-            field_policy.is_pydantic() && pydantic::constructor_fields_are_keyword_only(db, self);
-        let pydantic_constructor_fields_are_optional = name == "__init__"
-            && field_policy.is_pydantic()
-            && pydantic::constructor_fields_are_optional(db, self);
-
-        let instance_ty = Type::instance(
-            db,
-            env,
-            self.apply_optional_specialization(db, specialization),
-        );
+        let instance_ty = LazyCell::new(|| {
+            Type::instance(
+                db,
+                env,
+                self.apply_optional_specialization(db, specialization),
+            )
+        });
 
         let signature_from_fields = |mut parameters: Vec<_>, return_ty: Type<'db>| {
+            let pydantic_constructor_fields_are_keyword_only = field_policy.is_pydantic()
+                && pydantic::constructor_fields_are_keyword_only(db, self);
+            let pydantic_constructor_fields_are_optional = name == "__init__"
+                && field_policy.is_pydantic()
+                && pydantic::constructor_fields_are_optional(db, self);
+
             if name == "__init__" && field_policy.is_pydantic() {
                 pydantic::extend_settings_constructor_parameters(db, self, &mut parameters);
             }
 
-            for (field_name, field) in self.fields(db, specialization, field_policy) {
+            let fields = self.fields(db, specialization, field_policy);
+            let validated_fields = LazyCell::new(|| {
+                let names = fields
+                    .iter()
+                    .filter(|(_, field)| {
+                        matches!(field.kind, FieldKind::Pydantic { init: true, .. })
+                    })
+                    .map(|(name, _)| name.clone())
+                    .collect();
+                pydantic::fields_with_raw_input_validators(db, self, names)
+            });
+            for (field_name, field) in fields {
                 let (init, mut default_ty, kw_only, alias, converter, strict) = match &field.kind {
                     FieldKind::NamedTuple { default_ty } => (
                         true,
@@ -1991,9 +2040,9 @@ impl<'db> StaticClassLiteral<'db> {
                 };
                 let mut field_ty = field.declared_ty;
 
-                if !init && (name == "__init__" || field_policy.is_pydantic()) {
-                    // Fields with `init=False` are excluded from constructors. Pydantic's private
-                    // and internal fields are also excluded from replacement.
+                if !init {
+                    // Both constructors and replacement omit non-init fields, including
+                    // private and internal Pydantic model fields.
                     continue;
                 }
 
@@ -2067,7 +2116,12 @@ impl<'db> StaticClassLiteral<'db> {
                 {
                     let strict = metadata.field_is_strict(db, strict);
                     field_ty = pydantic::constructor_parameter_type(
-                        db, self, field_name, field_ty, strict,
+                        db,
+                        self,
+                        &validated_fields,
+                        field_name,
+                        field_ty,
+                        strict,
                     );
                 }
 
@@ -2156,31 +2210,53 @@ impl<'db> StaticClassLiteral<'db> {
                 parameters.push(extra);
             }
 
-            let signature = match name {
-                "__new__" | "__init__" => Signature::new_generic(
-                    inherited_generic_context,
-                    Parameters::standard(parameters),
-                    return_ty,
-                ),
-                _ => Signature::new(Parameters::standard(parameters), return_ty),
+            let generic_context = match name {
+                "__new__" | "__init__" => inherited_generic_context,
+                _ => None,
+            };
+            let signature = if return_ty.contains_self(db, env)
+                || parameters
+                    .iter()
+                    .any(|parameter| parameter.annotated_type().contains_self(db, env))
+            {
+                // Field annotations bind `Self` to their class. The generated method needs its
+                // own inferable `Self`, shared with the receiver, including for inherited fields.
+                let self_typevar = BoundTypeVarInstance::synthetic_self(
+                    db,
+                    SelfTypeVarOrigin::Class(self.into()),
+                    *instance_ty,
+                    BindingContext::Synthetic(env.program(db)),
+                );
+                let self_ty = Type::TypeVar(self_typevar);
+                let receiver = parameters.first_mut()?;
+                *receiver = receiver.clone().with_annotated_type(self_ty);
+                Signature::new_generic(generic_context, Parameters::standard(parameters), return_ty)
+                    .with_inferable_self(db, env, self_typevar)
+            } else {
+                Signature::new_generic(generic_context, Parameters::standard(parameters), return_ty)
             };
             Some(Type::function_like_callable(db, signature))
+        };
+
+        let init_signature = || {
+            // The receiver must not consume keyword arguments for fields named `self`.
+            let self_parameter = Parameter::positional_only(Some(Name::new_static("self")))
+                // TODO: could be `Self`.
+                .with_annotated_type(*instance_ty);
+            signature_from_fields(vec![self_parameter], Type::none(db, env))
         };
 
         match (field_policy, name) {
             (field_policy, "__init__")
                 if field_policy.synthesizes_constructor_signature_from_fields(db, self) =>
             {
-                if field_policy.is_dataclass_like()
-                    && !self.has_dataclass_param(db, field_policy, DataclassFlags::INIT)
-                {
-                    return None;
-                }
-
-                let self_parameter = Parameter::positional_or_keyword(Name::new_static("self"))
-                    // TODO: could be `Self`.
-                    .with_annotated_type(instance_ty);
-                signature_from_fields(vec![self_parameter], Type::none(db, env))
+                init_signature()
+            }
+            (CodeGeneratorKind::DataclassLike(_), "__attrs_init__")
+                if attrs::is_attrs_class(db, self)
+                    && !self.has_dataclass_param(db, field_policy, DataclassFlags::INIT) =>
+            {
+                init_signature()
             }
             (
                 CodeGeneratorKind::NamedTuple,
@@ -2200,7 +2276,7 @@ impl<'db> StaticClassLiteral<'db> {
                             env,
                             &TypeMapping::ReplaceSelf {
                                 new_origin: SelfTypeVarOrigin::Class(self.into()),
-                                new_upper_bound: instance_ty,
+                                new_upper_bound: *instance_ty,
                             },
                             TypeContext::default(),
                         )
@@ -2244,10 +2320,10 @@ impl<'db> StaticClassLiteral<'db> {
                     Parameters::standard([
                         Parameter::positional_or_keyword(Name::new_static("self"))
                             // TODO: could be `Self`.
-                            .with_annotated_type(instance_ty),
+                            .with_annotated_type(*instance_ty),
                         Parameter::positional_or_keyword(Name::new_static("other"))
                             // TODO: could be `Self`.
-                            .with_annotated_type(instance_ty),
+                            .with_annotated_type(*instance_ty),
                     ]),
                     KnownClass::Bool.to_instance(db, env),
                 );
@@ -2268,7 +2344,7 @@ impl<'db> StaticClassLiteral<'db> {
                         Parameters::standard([Parameter::positional_or_keyword(Name::new_static(
                             "self",
                         ))
-                        .with_annotated_type(instance_ty)]),
+                        .with_annotated_type(*instance_ty)]),
                         KnownClass::Int.to_instance(db, env),
                     );
 
@@ -2334,17 +2410,22 @@ impl<'db> StaticClassLiteral<'db> {
                 CodeGeneratorKind::DataclassLike(_) | CodeGeneratorKind::Pydantic(_),
                 "__replace__",
             ) if env.python_version(db) >= PythonVersion::PY313 => {
-                let self_parameter = Parameter::positional_or_keyword(Name::new_static("self"))
-                    .with_annotated_type(instance_ty);
+                let self_parameter = if field_policy.is_pydantic() {
+                    // Pydantic's `__replace__` receiver can be passed by keyword.
+                    Parameter::positional_or_keyword(Name::new_static("self"))
+                } else {
+                    Parameter::positional_only(Some(Name::new_static("self")))
+                }
+                .with_annotated_type(*instance_ty);
 
-                signature_from_fields(vec![self_parameter], instance_ty)
+                signature_from_fields(vec![self_parameter], *instance_ty)
             }
             (CodeGeneratorKind::DataclassLike(_), "__setattr__") => {
                 if self.is_frozen_dataclass(db) == Some(true) {
                     let signature = Signature::new(
                         Parameters::standard([
                             Parameter::positional_or_keyword(Name::new_static("self"))
-                                .with_annotated_type(instance_ty),
+                                .with_annotated_type(*instance_ty),
                             Parameter::positional_or_keyword(Name::new_static("name")),
                             Parameter::positional_or_keyword(Name::new_static("value")),
                         ]),
@@ -2361,7 +2442,7 @@ impl<'db> StaticClassLiteral<'db> {
                 let signature = Signature::new(
                     Parameters::standard([
                         Parameter::positional_or_keyword(Name::new_static("self"))
-                            .with_annotated_type(instance_ty),
+                            .with_annotated_type(*instance_ty),
                         Parameter::positional_or_keyword(Name::new_static("name")),
                     ]),
                     Type::Never,
@@ -2498,6 +2579,23 @@ impl<'db> StaticClassLiteral<'db> {
         }
     }
 
+    /// A class's type arguments do not affect whether any base is frozen. Share this
+    /// check across attribute writes and specializations before looking for overrides
+    /// and collecting fields. Incomplete MROs use the full lookup.
+    #[salsa::tracked(returns(copy), cycle_result=|_, _, _| true, heap_size=ruff_memory_usage::heap_size)]
+    fn may_inherit_frozen_fields(self, db: &'db dyn Db) -> bool {
+        let Ok(ancestors) = self.try_mro_ancestors(db, None) else {
+            return true;
+        };
+        ancestors.iter().any(|base| match base {
+            ClassBase::Class(class) => class
+                .static_class_literal(db)
+                .is_some_and(|(literal, _)| literal.is_frozen_dataclass(db) == Some(true)),
+            ClassBase::Any | ClassBase::Dynamic(_) | ClassBase::Divergent(_) => true,
+            ClassBase::Protocol | ClassBase::Generic | ClassBase::TypedDict(_) => false,
+        })
+    }
+
     /// Returns the inherited fields whose generated `__setattr__` or `__delattr__` still applies.
     fn inherited_non_slotted_frozen_dataclass_fields(
         self,
@@ -2505,6 +2603,10 @@ impl<'db> StaticClassLiteral<'db> {
         specialization: Option<Specialization<'db>>,
         method: &str,
     ) -> Option<InheritedFrozenDataclassFields<'db>> {
+        if !self.may_inherit_frozen_fields(db) {
+            return None;
+        }
+
         let mut names = FxIndexSet::default();
         let mut last_frozen_base = None;
 
@@ -2617,7 +2719,7 @@ impl<'db> StaticClassLiteral<'db> {
 
     #[salsa::tracked(
         returns(ref),
-        cycle_initial=|_, _, _, _, _| FxIndexMap::default(),
+        cycle_initial=|_, _, _, _, _, _| FxIndexMap::default(),
         heap_size=get_size2::GetSize::get_heap_size
     )]
     fn fields_inner(
@@ -2817,7 +2919,7 @@ impl<'db> StaticClassLiteral<'db> {
     /// Keeping both together avoids reinterpreting declarations while merging inherited fields.
     #[salsa::tracked(
         returns(ref),
-        cycle_initial=|_, _, _, _, _| OwnClassFields::default(),
+        cycle_initial=|_, _, _, _, _, _| OwnClassFields::default(),
         heap_size=get_size2::GetSize::get_heap_size
     )]
     fn own_fields_inner(
@@ -2848,8 +2950,10 @@ impl<'db> StaticClassLiteral<'db> {
                 CodeGeneratorKind::from_class(db, self.into()).unwrap_or(field_policy);
             self.has_dataclass_param(db, own_field_policy, DataclassFlags::KW_ONLY)
         });
+        let is_attrs = attrs::is_attrs_class(db, self);
         let mut kw_only_sentinel_field_seen = false;
         let mut field_declarations = Vec::new();
+        let mut decorated_defaults = attrs::DecoratedDefaults::new();
 
         for (symbol_id, declarations) in use_def.all_end_of_scope_symbol_declarations() {
             // Here, we exclude all declarations that are not annotated assignments. We need this because
@@ -2860,6 +2964,9 @@ impl<'db> StaticClassLiteral<'db> {
             // query, or to the `symbol_from_declarations` call below. Doing so would potentially require
             // us to generate a union of `__init__` methods.
             if !declarations.clone().contains_only_annotated_assignments(db) {
+                if is_attrs {
+                    decorated_defaults.collect_default_generator(db, declarations);
+                }
                 continue;
             }
 
@@ -2944,7 +3051,11 @@ impl<'db> StaticClassLiteral<'db> {
                 } else if let Some(Type::KnownInstance(KnownInstanceType::Field(field))) =
                     default_ty
                 {
-                    default_ty = field.default_type(db);
+                    default_ty = field.default_type(db).or_else(|| {
+                        decorated_defaults
+                            .has_default(db, symbol_id.into(), field)
+                            .then_some(Type::unknown())
+                    });
                     init = field.init(db);
                     kw_only = field.kw_only(db);
                     alias.clone_from(field.alias(db));
@@ -2957,6 +3068,10 @@ impl<'db> StaticClassLiteral<'db> {
                     // A bare `Final` infers its type from the default value. The constructor must
                     // accept only values compatible with the type read through the instance.
                     declared_ty = default_ty;
+                }
+
+                if is_attrs {
+                    alias = attrs::effective_field_alias(self.name(db), symbol.name(), alias);
                 }
 
                 let kind = match field_policy {
@@ -3416,7 +3531,7 @@ impl<'db> StaticClassLiteral<'db> {
             return None;
         }
 
-        #[salsa::tracked(returns(copy), cycle_initial=|_, _, _| None, heap_size=ruff_memory_usage::heap_size)]
+        #[salsa::tracked(returns(copy), cycle_initial=|_, _, _, _| None, heap_size=ruff_memory_usage::heap_size)]
         fn inheritance_cycle_inner<'db>(
             db: &'db dyn Db,
             class: StaticClassLiteral<'db>,
@@ -3632,7 +3747,7 @@ impl<'db> StaticClassLiteral<'db> {
     /// Build a definition-site equation before substituting type arguments. Supported protocols
     /// use their structural interface; `TypedDict` classes use their fields. Other classes retain the
     /// ordinary attribute and base-class variance rules.
-    #[salsa::tracked(returns(copy), cycle_initial=|_, _, _, _| VarianceTerm::BIVARIANT, heap_size=ruff_memory_usage::heap_size)]
+    #[salsa::tracked(returns(copy), cycle_initial=|_, _, _, _, _| VarianceTerm::BIVARIANT, heap_size=ruff_memory_usage::heap_size)]
     pub(in crate::types) fn variance_equation(
         self,
         db: &'db dyn Db,

@@ -1131,6 +1131,40 @@ def _(obj: GradualReader):
         reveal_type(obj.read())  # revealed: Any & int
 ```
 
+### Strict narrowing with a recursively inferred type argument
+
+The only assignment to `Box.value` reads the same attribute from another box, so ty cannot infer its
+type. Strict narrowing gives the tuple element type `object`. An `isinstance` check can then narrow
+the element to `str`.
+
+```toml
+[environment]
+python-version = "3.13"
+
+[analysis]
+strict-generic-narrowing = true
+```
+
+```py
+from typing import TypeIs
+
+class Box:
+    def copy_from(self, other: "Box"):
+        self.value = other.value
+
+def singleton_of[T](x: object, cls: type[T]) -> TypeIs[tuple[T]]:
+    return isinstance(x, tuple) and len(x) == 1 and isinstance(x[0], cls)
+
+def check(x: object, box: Box):
+    if singleton_of(x, type(box.value)):
+        item = x[0]
+        reveal_type(item)  # revealed: object
+        if isinstance(item, str):
+            reveal_type(item)  # revealed: str
+            item.upper()
+        item + 1  # error: [unsupported-operator]
+```
+
 ## Materialized `TypeIs` narrowing
 
 A `TypeIs[Any]` guard may materialize to any type, and so it narrows its argument to `Never` in the
@@ -1459,6 +1493,36 @@ def f(value: Color):
     if not is_recursive_color(value):
         assert_type(value.name, Literal["BLUE"])
         assert_type(value.value, Literal[2])
+```
+
+## Type guard definitions with recursive signatures
+
+This chain is long enough for ty to reach its cycle recovery limit and infer `Unknown` for the
+return types in the cached signatures. The annotations still tell us that `is_str` tries to narrow a
+function to `str` and that `guard` has no parameter to narrow.
+
+```pyi
+from typing_extensions import TypeGuard, TypeIs
+from ty_extensions._internal import TypeOf
+
+def f0() -> TypeOf[f1]: ...
+def f1() -> TypeOf[f2]: ...
+def f2() -> TypeOf[f3]: ...
+def f3() -> TypeOf[f4]: ...
+def f4() -> TypeOf[f5]: ...
+def f5() -> TypeOf[f6]: ...
+def f6() -> TypeOf[f7]: ...
+def f7() -> TypeOf[f8]: ...
+def f8() -> TypeOf[f9]: ...
+def f9() -> TypeOf[f10]: ...
+def f10() -> TypeOf[f11]: ...
+def f11() -> TypeOf[f12]: ...
+def f12() -> TypeOf[f13]: ...
+def f13() -> TypeOf[f14]: ...
+def f14() -> TypeOf[f15]: ...
+def f15() -> TypeOf[is_str]: ...
+def is_str(value: TypeOf[guard]) -> TypeIs[str]: ...  # error: [disjoint-type-is-narrowing]
+def guard() -> TypeGuard[TypeOf[f0]]: ...  # error: [invalid-type-guard-definition]
 ```
 
 ## Recursive TypeIs targets

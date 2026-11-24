@@ -427,6 +427,28 @@ def _(value: T) -> None:
     Protocol[value]  # error: [invalid-argument-type]
 ```
 
+## Type parameter order in an unpacked generic base
+
+When a class unpacks a tuple of bases, we report an invalid type parameter order on the `Generic`
+base inside the tuple.
+
+```toml
+[environment]
+python-version = "3.13"
+```
+
+```py
+from typing import Generic, TypeVar
+
+T = TypeVar("T", default=int)
+U = TypeVar("U")
+
+class C(*(
+    int,
+    Generic[T, U],  # error: [invalid-generic-class]
+)): ...
+```
+
 ## Recursive structural types in generic arguments
 
 A recursive protocol instance is not a valid `Generic` argument, even when its members keep changing
@@ -1419,7 +1441,7 @@ class C(Generic[T]):
     def __init__(self, value: T) -> None:
         reveal_type(C(value))  # revealed: C[T@C]
 
-        # error: [invalid-argument-type] "Expected `int`, found `T@C`"
+        # error: [invalid-assignment] "Object of type `C[T@C]` is not assignable to `C[int]`"
         invalid: C[int] = C(value)
 ```
 
@@ -1961,6 +1983,36 @@ reveal_type(C(1, True))  # revealed: C[int]
 wrong_innards: C[int] = C("five", 1)
 ```
 
+### Inferring a union from the initializer's receiver
+
+The arguments fix `A` to `bool` and `B` to `int`. The initializer's `self` annotation then gives the
+new box the element type `int`, since `bool` is a subtype of `int`.
+
+```py
+from typing import Generic, TypeVar
+
+T = TypeVar("T")
+A = TypeVar("A")
+B = TypeVar("B")
+
+class Box(Generic[T]):
+    value: T
+
+    def __init__(self: "Box[A | B]", left: "Box[A]", right: "Box[B]") -> None: ...
+
+def combine(left: Box[bool], right: Box[int]):
+    reveal_type(Box(left, right))  # revealed: Box[int]
+```
+
+If the left box carries a caller's type variable, the result keeps it in the union.
+
+```py
+U = TypeVar("U")
+
+def forward(left: Box[U], right: Box[int]):
+    reveal_type(Box(left, right))  # revealed: Box[U@forward | int]
+```
+
 ### Calling a generic initializer on an existing instance
 
 An inherited initializer can infer its own type parameters from the arguments. Its explicit `self`
@@ -1998,7 +2050,7 @@ could be `str` alone, so the initializer cannot assume it accepts both types.
 class Child(Either[T]):
     def initialize(self, cls: type[T], default: T | Callable[[], T]) -> None:
         super().__init__(cls, cls, default)  # ok
-        super().__init__(str, int, default)  # error: [invalid-argument-type] "Expected `Either[str | int]`"
+        super().__init__(str, int, default)  # error: [invalid-argument-type] "found `Self@initialize`"
 ```
 
 For `Either[bytes]`, the receiver is incompatible whether it is bound implicitly or passed
@@ -2228,6 +2280,29 @@ reveal_type(generic_context(into_regular_callable(A)))
 reveal_type(A(x=1))  # revealed: A[int]
 ```
 
+### Self fields in generic dataclasses
+
+A dataclass constructor infers the class type parameter alongside the `Self` used in its fields.
+
+```py
+from dataclasses import dataclass
+from typing_extensions import Generic, Self, TypeVar
+
+T = TypeVar("T")
+
+@dataclass
+class Node(Generic[T]):
+    value: T
+    parent: Self | None = None
+
+class IntNode(Node[int]): ...
+
+reveal_type(Node(1, Node(2)))  # revealed: Node[int]
+reveal_type(IntNode(1, IntNode(2)))  # revealed: IntNode
+IntNode("wrong")  # error: [invalid-argument-type]
+reveal_type(IntNode(1, Node(2)))  # revealed: IntNode
+```
+
 ### Inherited dataclass converters
 
 A subclass specializes an inherited converter's input type for its synthesized methods and attribute
@@ -2260,7 +2335,7 @@ class Base(Generic[T]):
 @model
 class Child(Base[str]): ...
 
-reveal_type(Child.__init__)  # revealed: (self: Child, value: str) -> None
+reveal_type(Child.__init__)  # revealed: (self: Child, /, value: str) -> None
 child = Child("a")
 reveal_type(child.value)  # revealed: str
 Child(1)  # error: [invalid-argument-type]
@@ -2268,7 +2343,7 @@ Child(1)  # error: [invalid-argument-type]
 child.value = "b"  # ok
 child.value = 1  # error: [invalid-assignment]
 
-reveal_type(Child.__replace__)  # revealed: (self: Child, *, value: str = ...) -> Child
+reveal_type(Child.__replace__)  # revealed: (self: Child, /, *, value: str = ...) -> Child
 child.__replace__(value="b")  # ok
 child.__replace__(value=1)  # error: [invalid-argument-type]
 ```
@@ -2282,7 +2357,7 @@ class Nested(Base[list[U]]): ...
 @model
 class Indirect(Nested[str]): ...
 
-reveal_type(Indirect.__init__)  # revealed: (self: Indirect, value: list[str]) -> None
+reveal_type(Indirect.__init__)  # revealed: (self: Indirect, /, value: list[str]) -> None
 indirect = Indirect(["a"])
 Indirect([1])  # error: [invalid-argument-type]
 indirect.value = ["b"]  # ok
@@ -2540,6 +2615,122 @@ class GenericChild(Gradual, Base[list[T]]): ...
 
 as_specialized: Base[list[int]] = GenericChild[int]()
 incompatible_specialization: Base[list[str]] = GenericChild[int]()  # error: [unsound-assignment]
+```
+
+Both `Child` and `Reversed` inherit `Base[int]`, so a value stored in either must be assignable to
+`int`, even though they both also inherit `Base[Any]`.
+
+```py
+U = TypeVar("U")
+
+def store(value: T, box: Base[T]) -> None:
+    box.value = value
+
+def check(value: U, child: Child, reversed_child: Reversed, concrete: Concrete):
+    # TODO: error: [invalid-argument-type]
+    store("wrong", child)
+    # TODO: error: [invalid-argument-type]
+    store(value, child)
+
+    # TODO: error: [invalid-argument-type]
+    store("wrong", reversed_child)
+    # TODO: error: [invalid-argument-type]
+    store(value, reversed_child)
+
+    store("wrong", concrete)  # error: [invalid-argument-type]
+    store(value, concrete)  # error: [invalid-argument-type]
+```
+
+## Overriding a method that returns its receiver type
+
+The base method promises a `Base` at minimum. An override that can return `None` violates that
+promise even when the receiver satisfies the bound on `T`.
+
+```pyi
+from typing import TypeVar
+
+T = TypeVar("T", bound="Base")
+
+class Base:
+    def clone(self: T) -> T: ...
+
+class Child(Base):
+    def clone(self) -> Child: ...
+
+class OptionalChild(Base):
+    def clone(self) -> OptionalChild | None: ...  # error: [incompatible-method-override]
+
+class Sibling(Base):
+    # TODO: Reject this override. The bound permits a Child, but the receiver is a Sibling.
+    def clone(self) -> Child: ...
+```
+
+## Invariant parameter and return types with a bounded receiver type variable
+
+The override of `get` returns `list[int]` where the base method promises `list[T]`. The override of
+`put` accepts `list[T]` where the base method accepts `list[int]`. Since `list` is invariant, both
+overrides would require `T` to be `int`, which exceeds its bound of `bool`.
+
+```pyi
+from typing import Generic, TypeVar
+
+K = TypeVar("K", bound=bool, covariant=True)
+T = TypeVar("T", bound=bool)
+
+class Buffer(Generic[K]):
+    def get(self: Buffer[T]) -> list[T]: ...
+    def put(self, values: list[int]) -> None: ...
+
+class Child(Buffer[K]):
+    def get(self) -> list[int]: ...  # error: [incompatible-method-override]
+    # error: [incompatible-method-override]
+    def put(self: Child[T], values: list[T]) -> None: ...
+```
+
+## Parameter and return types with a constrained receiver type variable
+
+The base methods restrict the receiver's key type to `bool` or `str`. Neither choice allows
+`first_key` to return an arbitrary `int` or `remove` to narrow its parameter from `int` to `T`.
+Returning `K` is valid for every receiver the base method accepts, even though `K` is unbounded.
+
+```pyi
+from typing import Any, Generic, TypeVar
+
+K = TypeVar("K", covariant=True)
+V = TypeVar("V")
+T = TypeVar("T", bool, str)
+
+class Map(Generic[K, V]):
+    def first_key(self: Map[T, Any]) -> T: ...
+    def remove(self: Map[T, Any], key: int) -> None: ...
+
+class ChildMap(Map[K, V]):
+    def first_key(self) -> int: ...  # error: [incompatible-method-override]
+    # error: [incompatible-method-override]
+    def remove(self: ChildMap[T, Any], key: T) -> None: ...
+
+class KeyMap(Map[K, V]):
+    def first_key(self) -> K: ...  # ok
+```
+
+## An override with the same receiver restriction as the base method
+
+Although `K` is unbounded, `Box.read` only accepts receivers whose element type satisfies the bound
+on `T`. The override accepts every `Child` for which the base method is defined.
+
+```pyi
+from typing import Generic, TypeVar
+
+K = TypeVar("K")
+T = TypeVar("T", bound=int)
+
+class Box(Generic[K]):
+    value: K
+
+    def read(self: Box[T]) -> T: ...
+
+class Child(Box[K]):
+    def read(self: Child[T]) -> T: ...  # ok
 ```
 
 ## Method overrides through gradual and concrete inheritance paths
