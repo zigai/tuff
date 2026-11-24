@@ -360,6 +360,14 @@ impl RuffSettingsIndex {
         self.fallback.clone()
     }
 
+    /// Returns an iterator over all resolved settings, including the fallback.
+    pub(super) fn settings(&self) -> impl Iterator<Item = &Settings> {
+        self.index
+            .values()
+            .chain(std::iter::once(&self.fallback))
+            .map(|settings| &***settings)
+    }
+
     /// Returns an iterator over the paths to the configuration files in the index.
     pub(crate) fn config_file_paths(&self) -> impl Iterator<Item = &Path> {
         self.index.values().filter_map(|settings| settings.path())

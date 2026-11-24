@@ -26,6 +26,8 @@ ruff_ranged_value = { workspace = true }
 ruff_source_file = { workspace = true }
 ruff_text_size = { workspace = true }
 ruff_workspace = { workspace = true }
+tuff_lint = { workspace = true }
+tuff_python_rules = { workspace = true }
 
 anyhow = { workspace = true }
 crossbeam = { workspace = true }

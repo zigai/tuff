@@ -3720,6 +3720,8 @@ dependencies = [
  "tracing",
  "tracing-log",
  "tracing-subscriber",
+ "tuff_lint",
+ "tuff_python_rules",
 ]
 
 [[package]]

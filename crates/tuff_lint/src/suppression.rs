@@ -13,24 +13,52 @@ pub struct IgnoreDirective {
     pub names: Option<Vec<String>>,
 }
 
-pub fn parse_comment(comment: &str) -> Result<Option<IgnoreDirective>> {
+fn pattern() -> Result<&'static Regex> {
     static PATTERN: LazyLock<Result<Regex, regex::Error>> = LazyLock::new(|| {
         Regex::new(
             r"#\s*tuff:\s*ignore(?:[ \t]*\[(?P<names>[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:,[ \t]*[a-z][a-z0-9]*(?:-[a-z0-9]+)*)*)\])?[ \t]*(?:#.*)?$",
         )
     });
-    let pattern = PATTERN
+    PATTERN
         .as_ref()
-        .map_err(|error| anyhow!("invalid Tuff ignore grammar: {error}"))?;
-    Ok(pattern.captures(comment).map(|captures| IgnoreDirective {
-        names: captures.name("names").map(|names| {
-            names
-                .as_str()
-                .split(',')
-                .map(|name| name.trim().to_owned())
-                .collect()
-        }),
-    }))
+        .map_err(|error| anyhow!("invalid Tuff ignore grammar: {error}"))
+}
+
+pub fn parse_comment(comment: &str) -> Result<Option<IgnoreDirective>> {
+    Ok(pattern()?
+        .captures(comment)
+        .map(|captures| IgnoreDirective {
+            names: captures.name("names").map(|names| {
+                names
+                    .as_str()
+                    .split(',')
+                    .map(|name| name.trim().to_owned())
+                    .collect()
+            }),
+        }))
+}
+
+/// The ranges of the rule names in a `# tuff: ignore[...]` comment, relative to the start of
+/// `comment`. Returns `None` when the comment is not a Tuff ignore comment or names no rules.
+pub fn name_ranges(comment: &str) -> Result<Option<Vec<TextRange>>> {
+    let Some(names) = pattern()?
+        .captures(comment)
+        .and_then(|captures| captures.name("names"))
+    else {
+        return Ok(None);
+    };
+    let mut ranges = Vec::new();
+    let mut start = names.start();
+    for part in names.as_str().split(',') {
+        let name_start = start + (part.len() - part.trim_start().len());
+        let name_end = name_start + part.trim().len();
+        ranges.push(TextRange::new(
+            TextSize::try_from(name_start)?,
+            TextSize::try_from(name_end)?,
+        ));
+        start += part.len() + ','.len_utf8();
+    }
+    Ok(Some(ranges))
 }
 
 #[derive(Debug)]

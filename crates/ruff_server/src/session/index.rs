@@ -14,6 +14,7 @@ use crate::edit::LanguageId;
 use crate::session::Client;
 use crate::session::options::Combine;
 use crate::session::settings::GlobalClientSettings;
+use crate::tuff::python_rules::WatchedPaths;
 use crate::workspace::{Workspace, Workspaces};
 use crate::{
     PositionEncoding, TextDocument,
@@ -41,6 +42,21 @@ pub(crate) struct Index {
 struct WorkspaceSettings {
     client_settings: Arc<ClientSettings>,
     ruff_settings: ruff_settings::RuffSettingsIndex,
+    /// Python rule sources of every settings loaded for this workspace. Paths are kept when
+    /// a reload fails, so fixing a broken rule module still reloads the settings.
+    python_rule_paths: WatchedPaths,
+}
+
+impl WorkspaceSettings {
+    fn reload(&mut self, client: &Client, root: &Path) {
+        self.ruff_settings = ruff_settings::RuffSettingsIndex::new(
+            client,
+            root,
+            self.client_settings.editor_settings(),
+            false,
+        );
+        self.python_rule_paths.extend(self.ruff_settings.settings());
+    }
 }
 
 /// A mutable handler to an underlying document.
@@ -256,8 +272,8 @@ impl Index {
     /// This method avoids re-indexing the same workspace multiple times if multiple files
     /// belonging to the same workspace have been changed.
     ///
-    /// The file events are expected to only contain paths that map to configuration files. This is
-    /// registered in [`try_register_capabilities`] method.
+    /// The file events are expected to only contain paths that map to configuration files or
+    /// Python rule sources. This is registered in [`try_register_capabilities`] method.
     ///
     /// [`try_register_capabilities`]: crate::server::Server::try_register_capabilities
     pub(super) fn reload_settings(&mut self, changes: &[FileEvent], client: &Client) {
@@ -287,14 +303,27 @@ impl Index {
                 }
                 indexed.insert(root.clone());
 
-                settings.ruff_settings = ruff_settings::RuffSettingsIndex::new(
-                    client,
-                    root,
-                    settings.client_settings.editor_settings(),
-                    false,
-                );
+                settings.reload(client, root);
+            }
+
+            // Plugin directories can live outside the workspaces whose rules they define.
+            for (root, settings) in self.settings.iter_mut() {
+                if settings.python_rule_paths.contains(&changed_path)
+                    && indexed.insert(root.clone())
+                {
+                    settings.reload(client, root);
+                }
             }
         }
+    }
+
+    /// Python rule sources of every workspace.
+    pub(super) fn python_rule_paths(&self) -> WatchedPaths {
+        let mut paths = WatchedPaths::default();
+        for settings in self.settings.values() {
+            paths.union(&settings.python_rule_paths);
+        }
+        paths
     }
 
     pub(super) fn open_text_document(&mut self, uri: Uri, document: TextDocument) {
@@ -455,12 +484,16 @@ impl WorkspaceSettingsIndex {
             workspace.is_default(),
         );
 
+        let mut python_rule_paths = WatchedPaths::default();
+        python_rule_paths.extend(workspace_settings_index.settings());
+
         tracing::info!("Registering workspace: {}", workspace_path.display());
         self.insert(
             workspace_path,
             WorkspaceSettings {
                 client_settings,
                 ruff_settings: workspace_settings_index,
+                python_rule_paths,
             },
         );
 

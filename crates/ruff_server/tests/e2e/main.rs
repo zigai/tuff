@@ -31,6 +31,7 @@ mod custom_extension;
 mod diagnostics;
 mod hover;
 mod notebook;
+mod python_rules;
 mod workspace;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -671,7 +672,6 @@ impl TestServer {
         self.test_context.root().join(path)
     }
 
-    #[expect(dead_code)]
     pub(crate) fn write_file(
         &self,
         path: impl AsRef<Path>,
@@ -716,7 +716,6 @@ impl TestServer {
     }
 
     /// Send a `textDocument/didChange` notification with the given content changes
-    #[expect(dead_code)]
     pub(crate) fn change_text_document(
         &mut self,
         path: impl AsRef<Path>,
@@ -747,7 +746,6 @@ impl TestServer {
     }
 
     /// Send a `workspace/didChangeWatchedFiles` notification with the given file events
-    #[expect(dead_code)]
     pub(crate) fn did_change_watched_files(&mut self, events: Vec<FileEvent>) {
         let params = DidChangeWatchedFilesParams { changes: events };
         self.send_notification::<DidChangeWatchedFilesNotification>(params);
@@ -882,7 +880,6 @@ impl TestServer {
         self.await_response::<CodeActionRequest>(&id)
     }
 
-    #[expect(dead_code)]
     pub(crate) fn respond(&mut self, request_id: RequestId, result: impl serde::Serialize) {
         let response = Response::new_ok(request_id, result);
         self.send(Message::Response(response));

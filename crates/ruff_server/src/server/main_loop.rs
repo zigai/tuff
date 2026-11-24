@@ -10,6 +10,7 @@ use crate::{
     Server,
     server::{api, schedule},
     session::Client,
+    tuff::python_rules,
 };
 
 pub(crate) type MainLoopSender = crossbeam::channel::Sender<Event>;
@@ -265,6 +266,8 @@ impl Server {
                 "LSP client does not support dynamic capability registration - automatic configuration reloading will not be available."
             );
         }
+
+        python_rules::sync_watchers(&mut self.session, client);
     }
 }
 

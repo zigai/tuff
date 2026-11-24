@@ -19,6 +19,7 @@ mod logging;
 mod resolve;
 mod server;
 mod session;
+mod tuff;
 mod workspace;
 
 const SERVER_NAME: &str = "ruff";

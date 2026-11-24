@@ -10,6 +10,7 @@ use crate::edit::{DocumentKey, DocumentVersion, NotebookDocument};
 use crate::format::FormatBackend;
 use crate::session::request_queue::RequestQueue;
 use crate::session::settings::GlobalClientSettings;
+use crate::tuff::python_rules;
 use crate::workspace::Workspaces;
 use crate::{PositionEncoding, TextDocument, WorkspaceTrust};
 
@@ -46,6 +47,8 @@ pub(crate) struct Session {
 
     /// Has the client requested the server to shutdown.
     shutdown_requested: bool,
+
+    python_rule_watchers: python_rules::Watchers,
 }
 
 /// An immutable snapshot of `Session` that references
@@ -77,6 +80,7 @@ impl Session {
             )),
             request_queue: RequestQueue::new(),
             shutdown_requested: false,
+            python_rule_watchers: python_rules::Watchers::new(client_capabilities),
         })
     }
 
@@ -181,6 +185,19 @@ impl Session {
         self.index.reload_settings(changes, client);
     }
 
+    pub(crate) fn update_python_rule_watchers(&mut self) -> python_rules::WatcherUpdate {
+        self.python_rule_watchers
+            .update(self.index.python_rule_paths())
+    }
+
+    /// Whether saving `uri` should reload the settings that load Python rules from it.
+    pub(crate) fn reloads_python_rules_on_save(&self, uri: &Uri) -> bool {
+        self.python_rule_watchers.reload_on_save()
+            && uri
+                .to_file_path()
+                .is_ok_and(|path| self.index.python_rule_paths().contains(&path))
+    }
+
     /// Open a workspace folder at the given `uri`.
     pub(crate) fn open_workspace_folder(&mut self, uri: Uri, client: &Client) -> crate::Result<()> {
         self.index
@@ -277,7 +294,7 @@ mod tests {
 
     use super::index::Index;
     use super::options::GlobalOptions;
-    use super::{Client, Session};
+    use super::{Client, ClientCapabilities, Session, python_rules};
     use crate::format::FormatBackend;
     use crate::session::request_queue::RequestQueue;
     use crate::{PositionEncoding, TextDocument, WorkspaceTrust};
@@ -299,6 +316,7 @@ mod tests {
             resolved_client_capabilities: Arc::default(),
             request_queue: RequestQueue::new(),
             shutdown_requested: false,
+            python_rule_watchers: python_rules::Watchers::new(&ClientCapabilities::default()),
         };
         let uri: Uri = "untitled:test.py".parse()?;
         session.open_text_document(uri.clone(), TextDocument::new(String::new(), 1));

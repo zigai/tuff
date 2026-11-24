@@ -13,6 +13,7 @@ use crate::{
     edit::{NotebookDocument, NotebookRange, ToRangeExt},
     resolve::is_document_excluded_for_linting,
     session::DocumentQuery,
+    tuff::python_rules,
 };
 use ruff_db::diagnostic::{Annotation, Diagnostic, Span, SubDiagnostic};
 use ruff_diagnostics::{Applicability, Edit, Fix};
@@ -229,7 +230,7 @@ fn check_python(
         &suppressions,
     );
 
-    let suppression_edits = generate_suppression_edits(
+    let mut suppression_edits = generate_suppression_edits(
         &document_path,
         &diagnostics,
         &locator,
@@ -246,6 +247,14 @@ fn check_python(
             SuppressionKind::Noqa
         },
         settings.linter.preview,
+    );
+    python_rules::replace_suppression_edits(
+        &diagnostics,
+        &mut suppression_edits,
+        &settings.linter,
+        locator.contents(),
+        &indexer,
+        &directives,
     );
     let index = locator.to_index().clone();
 

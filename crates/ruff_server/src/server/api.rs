@@ -111,6 +111,7 @@ pub(super) fn notification(notif: server::Notification) -> Task {
         }
         notification::DidClose::METHOD => sync_notification_task::<notification::DidClose>(notif),
         notification::DidOpen::METHOD => sync_notification_task::<notification::DidOpen>(notif),
+        notification::DidSave::METHOD => sync_notification_task::<notification::DidSave>(notif),
         notification::DidOpenNotebook::METHOD => {
             sync_notification_task::<notification::DidOpenNotebook>(notif)
         }

@@ -1,6 +1,7 @@
 use crate::server::Result;
 use crate::server::api::LSPResult;
 use crate::session::{Client, Session};
+use crate::tuff::python_rules;
 use lsp_types::{self as types, DidChangeWorkspaceFoldersNotification};
 
 pub(crate) struct DidChangeWorkspace;
@@ -25,6 +26,7 @@ impl super::SyncNotificationHandler for DidChangeWorkspace {
                 .close_workspace_folder(&uri)
                 .with_failure_code(lsp_server::ErrorCode::InvalidParams)?;
         }
+        python_rules::sync_watchers(session, client);
         Ok(())
     }
 }

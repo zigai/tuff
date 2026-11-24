@@ -27,6 +27,7 @@ use self::schedule::spawn_main_loop;
 pub(crate) use crate::server::main_loop::MainLoopSender;
 pub(crate) use crate::server::main_loop::{Event, MainLoopReceiver};
 use crate::session::{AllOptions, Client, Session};
+use crate::tuff::python_rules;
 use crate::workspace::Workspaces;
 use crate::{PositionEncoding, WorkspaceTrust};
 pub(crate) use api::Error;
@@ -257,7 +258,7 @@ impl Server {
                     change: Some(TextDocumentSyncKind::Incremental),
                     will_save: Some(false),
                     will_save_wait_until: Some(false),
-                    save: None,
+                    save: python_rules::save_notifications(client_capabilities),
                 }
                 .into(),
             ),

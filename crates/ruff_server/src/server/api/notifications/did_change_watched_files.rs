@@ -2,6 +2,7 @@ use crate::server::Result;
 use crate::server::api::LSPResult;
 use crate::server::api::diagnostics::publish_diagnostics_for_document;
 use crate::session::{Client, Session};
+use crate::tuff::python_rules;
 use lsp_types::{self as types, DidChangeWatchedFilesNotification};
 
 pub(crate) struct DidChangeWatchedFiles;
@@ -17,6 +18,7 @@ impl super::SyncNotificationHandler for DidChangeWatchedFiles {
         params: types::DidChangeWatchedFilesParams,
     ) -> Result<()> {
         session.reload_settings(&params.changes, client);
+        python_rules::sync_watchers(session, client);
 
         if !params.changes.is_empty() {
             if session.resolved_client_capabilities().workspace_refresh {

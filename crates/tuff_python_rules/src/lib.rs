@@ -44,6 +44,7 @@ pub struct PluginConfig {
 #[derive(Debug)]
 pub struct Plugins {
     root: PathBuf,
+    plugin_dirs: Vec<PathBuf>,
     rules: Vec<LoadedRule>,
     fingerprint: String,
     pool: Arc<WorkerPool>,
@@ -67,16 +68,13 @@ impl Plugins {
             || std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
             NonZeroUsize::get,
         );
-        let pool = worker::shared_pool(
-            WorkerSpec {
-                python,
-                root: root.to_path_buf(),
-                plugin_dirs: config.plugin_dirs.clone(),
-                rule_files: files.rules.clone(),
-            },
-            &key,
-            capacity,
-        );
+        let spec = WorkerSpec {
+            python,
+            root: root.to_path_buf(),
+            plugin_dirs: config.plugin_dirs.clone(),
+            rule_files: files.rules.clone(),
+        };
+        let pool = worker::shared_pool(spec.clone(), &key, capacity);
         let manifest = if files.rules.is_empty() {
             Manifest {
                 python_version: String::new(),
@@ -91,18 +89,35 @@ impl Plugins {
             }
             manifest
         };
-        Self::from_manifest(root, manifest, &key, pool)
+        let watched = watched_key(root, &manifest)?;
+        // A rule may read its watched files when its module is imported, so workers started
+        // before a watched file changed must not serve the new contents.
+        let pool = match &watched {
+            Some(watched) => worker::shared_pool(spec, &format!("{key}:{watched}"), capacity),
+            None => pool,
+        };
+        Self::from_manifest(
+            root,
+            config.plugin_dirs.clone(),
+            manifest,
+            &key,
+            watched.as_deref(),
+            pool,
+        )
     }
 
     fn from_manifest(
         root: &Path,
+        plugin_dirs: Vec<PathBuf>,
         manifest: Manifest,
         key: &str,
+        watched: Option<&str>,
         pool: Arc<WorkerPool>,
     ) -> Result<Self> {
         let mut hasher = Sha256::new();
         hash_field(&mut hasher, key.as_bytes());
         hash_field(&mut hasher, manifest.python_version.as_bytes());
+        hash_field(&mut hasher, watched.unwrap_or_default().as_bytes());
         let mut rules = Vec::with_capacity(manifest.rules.len());
         let mut seen = FxHashSet::default();
         for rule in manifest.rules {
@@ -117,10 +132,6 @@ impl Plugins {
                     rule.path.display()
                 )
             })?;
-            for watched in &rule.watch_files {
-                hash_field(&mut hasher, watched.as_bytes());
-                discovery::hash_path(&mut hasher, &root.join(watched))?;
-            }
             rules.push(LoadedRule {
                 name: intern(&rule.name),
                 manifest: rule,
@@ -129,6 +140,7 @@ impl Plugins {
         }
         Ok(Self {
             root: root.to_path_buf(),
+            plugin_dirs,
             rules,
             fingerprint: hex(hasher.finalize().as_slice()),
             pool,
@@ -199,6 +211,15 @@ pub struct PythonRules {
     fingerprint: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RuleInfo<'a> {
+    pub name: &'static str,
+    pub description: &'a str,
+    /// The module that defines the rule.
+    pub path: &'a Path,
+    pub enabled: bool,
+}
+
 /// A file Ruff has parsed and analyzed.
 pub struct CheckedFile<'a> {
     pub path: &'a Path,
@@ -256,6 +277,36 @@ impl PythonRules {
             .iter()
             .find(|rule| rule.name == name)
             .map(|rule| rule.name)
+    }
+
+    /// Describes a discovered rule, whether or not it is enabled.
+    pub fn rule(&self, name: &str) -> Option<RuleInfo<'_>> {
+        let index = self
+            .plugins
+            .rules
+            .iter()
+            .position(|rule| rule.name == name)?;
+        let rule = &self.plugins.rules[index];
+        Some(RuleInfo {
+            name: rule.name,
+            description: &rule.manifest.description,
+            path: &rule.manifest.path,
+            enabled: self.active.iter().any(|active| active.index == index),
+        })
+    }
+
+    pub fn plugin_dirs(&self) -> &[PathBuf] {
+        &self.plugins.plugin_dirs
+    }
+
+    /// The files and directories that rules list in `watch_files`.
+    pub fn watched_files(&self) -> impl Iterator<Item = PathBuf> + '_ {
+        self.plugins.rules.iter().flat_map(|rule| {
+            rule.manifest
+                .watch_files
+                .iter()
+                .map(|watched| self.plugins.root.join(watched))
+        })
     }
 
     pub fn has_active_rules(&self) -> bool {
@@ -412,6 +463,21 @@ impl PythonRules {
             edits,
         })
     }
+}
+
+/// Hashes the names and contents of every rule's `watch_files`, or returns `None` when no
+/// rule watches files.
+fn watched_key(root: &Path, manifest: &Manifest) -> Result<Option<String>> {
+    let mut hasher = Sha256::new();
+    let mut any = false;
+    for rule in &manifest.rules {
+        for watched in &rule.watch_files {
+            any = true;
+            hash_field(&mut hasher, watched.as_bytes());
+            discovery::hash_path(&mut hasher, &root.join(watched))?;
+        }
+    }
+    Ok(any.then(|| hex(hasher.finalize().as_slice())))
 }
 
 fn relative_path(root: &Path, path: &Path) -> String {

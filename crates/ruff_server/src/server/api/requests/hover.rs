@@ -1,6 +1,7 @@
 use crate::edit::{RangeExt, ToRangeExt};
 use crate::server::Result;
 use crate::session::{Client, DocumentSnapshot};
+use crate::tuff::python_rules;
 use anyhow::Context;
 use lsp_types::{self as types, HoverRequest};
 use ruff_linter::FixAvailability;
@@ -80,18 +81,29 @@ fn hover(
         .tokens()
         .at_offset(cursor)
         .find(|token| token.kind() == TokenKind::Comment)?;
-    let identifier_range =
-        rule_identifier_range_at_offset(document.contents(), comment.range(), cursor)?;
-
-    // Get the rule for the identifier under the cursor.
-    let identifier = &document.contents()[identifier_range];
-    let rule = Rule::from_code(identifier)
-        .ok()
-        .or_else(|| Rule::from_name(identifier).ok());
-    let output = if let Some(rule) = rule {
-        format_rule_text(rule)
+    let (identifier_range, output) = if let Some(tuff_ignore) = python_rules::ignore_comment_hover(
+        document.contents(),
+        comment.range(),
+        cursor,
+        snapshot.query().settings(),
+        format_rule_text,
+    ) {
+        tuff_ignore
     } else {
-        format!("{identifier}: Rule not found")
+        let identifier_range =
+            rule_identifier_range_at_offset(document.contents(), comment.range(), cursor)?;
+
+        // Get the rule for the identifier under the cursor.
+        let identifier = &document.contents()[identifier_range];
+        let rule = Rule::from_code(identifier)
+            .ok()
+            .or_else(|| Rule::from_name(identifier).ok());
+        let output = if let Some(rule) = rule {
+            format_rule_text(rule)
+        } else {
+            format!("{identifier}: Rule not found")
+        };
+        (identifier_range, output)
     };
 
     let hover = types::Hover {
