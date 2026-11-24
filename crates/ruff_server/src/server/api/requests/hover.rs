@@ -90,8 +90,7 @@ fn noqa_hover(
             cursor,
             settings,
             format_rule_text,
-        )
-    {
+        ) {
         tuff_ignore
     } else {
         let identifier_range =
