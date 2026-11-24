@@ -207,6 +207,8 @@ pub struct Options {
     pub format: Option<Table>,
     #[serde(default)]
     pub lint: LintOptions,
+    #[serde(default)]
+    pub throws: Option<Table>,
 }
 
 impl Options {
@@ -214,6 +216,13 @@ impl Options {
     pub fn combine(mut self, parent: Self) -> Self {
         self.lint = self.lint.combine(parent.lint);
         self.format = match (self.format, parent.format) {
+            (Some(child), Some(mut parent)) => {
+                merge_tables(&mut parent, child);
+                Some(parent)
+            }
+            (child, parent) => child.or(parent),
+        };
+        self.throws = match (self.throws, parent.throws) {
             (Some(child), Some(mut parent)) => {
                 merge_tables(&mut parent, child);
                 Some(parent)
@@ -417,5 +426,22 @@ mod tests {
         options.resolve_paths(Path::new("/project"));
         assert_eq!(options.python, Some(PathBuf::from("python3.12")));
         assert_eq!(options.plugin_config(), None);
+    }
+
+    #[test]
+    fn options_accept_throws_section() {
+        let parsed: Pyproject = toml::from_str(
+            r#"
+            [tool.tuff.lint]
+            enable = ["forbidden-call"]
+
+            [tool.tuff.throws]
+            boundaries = ["app.api.*"]
+            "#,
+        )
+        .unwrap();
+        let tuff = parsed.tool.and_then(|tool| tool.tuff).unwrap();
+        assert_eq!(tuff.lint.enable, ["forbidden-call"]);
+        assert!(tuff.throws.is_some());
     }
 }

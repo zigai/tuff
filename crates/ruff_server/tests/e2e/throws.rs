@@ -1,11 +1,8 @@
-use std::time::Duration;
-
 use anyhow::Result;
 use insta::{assert_json_snapshot, assert_snapshot};
 use lsp_types::{
     Diagnostic, DocumentDiagnosticReport, Position, PublishDiagnosticsNotification,
-    ShowMessageNotification, TextDocumentContentChangeEvent,
-    TextDocumentContentChangeWholeDocument,
+    TextDocumentContentChangeEvent, TextDocumentContentChangeWholeDocument,
 };
 
 use crate::{TestServer, TestServerBuilder};
@@ -110,17 +107,6 @@ fn project(pyproject: &str) -> Result<TestServerBuilder> {
         .with_file("app/service.py", SERVICE)
 }
 
-/// Consumes the settings error reported for a project that configures throws.
-///
-/// The Ruff settings loader does not accept a `throws` table under `[tool.tuff]` yet, so the
-/// server may report a settings error when it registers the workspace. Ruff then falls back to
-/// its default settings; exception-flow analysis is unaffected. Call this after the first
-/// response, by which point the server has registered the workspace.
-fn dismiss_settings_error(server: &mut TestServer) {
-    let _ =
-        server.try_await_notification::<ShowMessageNotification>(Some(Duration::from_millis(10)));
-}
-
 fn tuff_diagnostics(server: &mut TestServer, path: &str) -> Vec<Diagnostic> {
     let DocumentDiagnosticReport::RelatedFullDocumentDiagnosticReport(report) =
         server.document_diagnostic_request(path, None)
@@ -180,8 +166,6 @@ fn diagnostics_for_configured_workspace() -> Result<()> {
     assert_json_snapshot!("throws_api_diagnostics", api);
     assert_json_snapshot!("throws_service_diagnostics", service);
 
-    dismiss_settings_error(&mut server);
-
     Ok(())
 }
 
@@ -195,8 +179,6 @@ fn diagnostics_without_related_information_support() -> Result<()> {
     assert_eq!(codes(&diagnostics), ["THROWS001", "THROWS002"]);
     assert!(diagnostics[0].related_information.is_none());
     assert_json_snapshot!(diagnostics[0].message, @r#""`NotFound` escapes boundary `handler` unhandled\n\n  handler  app/api.py:6:12  calls `load()`\n→ load     app/core.py:5:5  raises `NotFound`""#);
-
-    dismiss_settings_error(&mut server);
 
     Ok(())
 }
@@ -242,8 +224,6 @@ fn diagnostics_follow_unsaved_edits() -> Result<()> {
     let closed = tuff_diagnostics(&mut server, "app/api.py");
     assert_eq!(closed, before);
 
-    dismiss_settings_error(&mut server);
-
     Ok(())
 }
 
@@ -277,8 +257,6 @@ fn published_diagnostics_use_unsaved_buffers() -> Result<()> {
     assert_eq!(related.len(), 2);
     assert_eq!(related[1].location.uri, server.file_uri("app/core.py"));
     assert_eq!(related[1].message, "`load` raises `Invalid`");
-
-    dismiss_settings_error(&mut server);
 
     Ok(())
 }
@@ -364,8 +342,6 @@ fn hover_on_definition_and_call_site() -> Result<()> {
 
     assert!(hover_markdown(&mut server, "app/api.py", position_of(API, "try")).is_none());
 
-    dismiss_settings_error(&mut server);
-
     Ok(())
 }
 
@@ -382,8 +358,6 @@ fn noqa_hover_takes_precedence_on_comments() -> Result<()> {
     let throws = hover_markdown(&mut server, "app/api.py", position_of(API, "handler"))
         .expect("Expected hover information for a function on the same line");
     assert!(throws.starts_with("**`app.api.handler`**"));
-
-    dismiss_settings_error(&mut server);
 
     Ok(())
 }
