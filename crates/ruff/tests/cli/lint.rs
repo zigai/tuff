@@ -3021,7 +3021,7 @@ fn add_noqa_invalid_script_metadata() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
-    ruff failed
+    tuff failed
       Cause: invalid-script-metadata: invalid type: integer `42`, expected a string
      --> script.py:3:21
       |
@@ -3052,7 +3052,7 @@ fn add_ignore_invalid_script_metadata() -> Result<()> {
     ----- stdout -----
 
     ----- stderr -----
-    ruff failed
+    tuff failed
       Cause: invalid-script-metadata: invalid type: integer `42`, expected a string
      --> script.py:3:21
       |

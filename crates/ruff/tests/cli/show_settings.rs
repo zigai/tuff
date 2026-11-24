@@ -116,7 +116,7 @@ fn show_settings_invalid_script_metadata() -> anyhow::Result<()> {
     ----- stdout -----
 
     ----- stderr -----
-    ruff failed
+    tuff failed
       Cause: invalid-script-metadata: invalid type: integer `42`, expected a string
      --> script.py:3:21
       |
