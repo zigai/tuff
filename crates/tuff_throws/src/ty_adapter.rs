@@ -3,14 +3,24 @@
 //! Everything else in this crate works with plain paths, text ranges, and qualified names, so
 //! changes to ty's internal APIs only need to be absorbed here.
 
+use std::any::Any;
 use std::cell::RefCell;
+use std::hash::{DefaultHasher, Hash, Hasher as _};
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
+use ruff_db::file_revision::FileRevision;
 use ruff_db::files::File;
 use ruff_db::parsed::{ParsedModuleRef, parsed_module};
 use ruff_db::source::source_text;
-use ruff_db::system::{OsSystem, SystemPathBuf};
+use ruff_db::system::walk_directory::WalkDirectoryBuilder;
+use ruff_db::system::{
+    CommandExecutor, DirectoryEntry, FileType, Metadata, OsSystem, System, SystemPath,
+    SystemPathBuf, SystemVirtualPath, WhichResult, WritableSystem,
+};
+use ruff_notebook::{Notebook, NotebookError};
 use ruff_python_ast::find_node::covering_node;
 use ruff_python_ast::{AnyNodeRef, PySourceType};
 use ruff_text_size::{Ranged, TextRange, TextSize};
@@ -24,6 +34,10 @@ use ty_python_semantic::{
 };
 
 use crate::extract::{ModuleContext, ModuleFacts, extract};
+
+/// In-memory file contents, such as unsaved editor buffers, that take precedence over the
+/// files on disk. Keys are absolute paths.
+pub type Overrides = FxHashMap<PathBuf, String>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FileId(u32);
@@ -71,11 +85,15 @@ pub struct TyProject {
 }
 
 impl TyProject {
-    /// Discovers the ty project containing `root` and indexes its Python source files.
-    pub fn open(root: &Path) -> Result<Self> {
+    /// Discovers the ty project containing `root` and indexes its Python source files, reading
+    /// the contents of the files in `overrides` from memory instead of from disk.
+    ///
+    /// Only files that exist on disk are part of the project; an override for a file that does
+    /// not exist on disk is ignored.
+    pub fn open(root: &Path, overrides: &Overrides) -> Result<Self> {
         let system_root = SystemPathBuf::from_path_buf(root.to_path_buf())
             .map_err(|path| anyhow!("path is not valid UTF-8: {}", path.display()))?;
-        let system = OsSystem::new(&system_root);
+        let system = OverlaySystem::new(OsSystem::new(&system_root), overrides)?;
         let mut metadata = ProjectMetadata::discover(&system_root, &system)?;
         metadata.apply_configuration_files(&system)?;
         let mut db = ProjectDatabase::fallible(metadata, system)?;
@@ -262,6 +280,131 @@ impl TyProject {
             Some(module) => format!("{module}.{}", class.name),
             None => class.name.to_string(),
         }
+    }
+}
+
+/// The operating system's file system with some file contents replaced by in-memory text.
+#[derive(Debug, Clone)]
+struct OverlaySystem {
+    native: OsSystem,
+    overrides: Arc<FxHashMap<SystemPathBuf, String>>,
+}
+
+impl OverlaySystem {
+    fn new(native: OsSystem, overrides: &Overrides) -> Result<Self> {
+        let overrides = overrides
+            .iter()
+            .map(|(path, contents)| {
+                let path = SystemPathBuf::from_path_buf(path.clone())
+                    .map_err(|path| anyhow!("path is not valid UTF-8: {}", path.display()))?;
+                Ok((path, contents.clone()))
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self {
+            native,
+            overrides: Arc::new(overrides),
+        })
+    }
+}
+
+impl System for OverlaySystem {
+    fn path_metadata(&self, path: &SystemPath) -> io::Result<Metadata> {
+        let metadata = self.native.path_metadata(path)?;
+        let Some(contents) = self.overrides.get(path) else {
+            return Ok(metadata);
+        };
+        let mut hasher = DefaultHasher::new();
+        contents.hash(&mut hasher);
+        Ok(Metadata::new(
+            FileRevision::from(hasher.finish()),
+            metadata.permissions(),
+            FileType::File,
+        ))
+    }
+
+    fn canonicalize_path(&self, path: &SystemPath) -> io::Result<SystemPathBuf> {
+        self.native.canonicalize_path(path)
+    }
+
+    fn is_same_file(&self, first: &SystemPath, second: &SystemPath) -> io::Result<bool> {
+        self.native.is_same_file(first, second)
+    }
+
+    fn which(&self, binary_name: &str) -> WhichResult {
+        self.native.which(binary_name)
+    }
+
+    fn command_executor(&self) -> Option<&dyn CommandExecutor> {
+        self.native.command_executor()
+    }
+
+    fn read_to_string(&self, path: &SystemPath) -> io::Result<String> {
+        match self.overrides.get(path) {
+            Some(contents) => Ok(contents.clone()),
+            None => self.native.read_to_string(path),
+        }
+    }
+
+    fn read_to_notebook(&self, path: &SystemPath) -> std::result::Result<Notebook, NotebookError> {
+        self.native.read_to_notebook(path)
+    }
+
+    fn read_virtual_path_to_string(&self, path: &SystemVirtualPath) -> io::Result<String> {
+        self.native.read_virtual_path_to_string(path)
+    }
+
+    fn read_virtual_path_to_notebook(
+        &self,
+        path: &SystemVirtualPath,
+    ) -> std::result::Result<Notebook, NotebookError> {
+        self.native.read_virtual_path_to_notebook(path)
+    }
+
+    fn path_exists(&self, path: &SystemPath) -> bool {
+        self.native.path_exists(path)
+    }
+
+    fn current_directory(&self) -> &SystemPath {
+        self.native.current_directory()
+    }
+
+    fn user_config_directory(&self) -> Option<SystemPathBuf> {
+        self.native.user_config_directory()
+    }
+
+    fn cache_dir(&self) -> Option<SystemPathBuf> {
+        self.native.cache_dir()
+    }
+
+    fn read_directory<'a>(
+        &'a self,
+        path: &SystemPath,
+    ) -> io::Result<Box<dyn Iterator<Item = io::Result<DirectoryEntry>> + 'a>> {
+        self.native.read_directory(path)
+    }
+
+    fn walk_directory(&self, path: &SystemPath) -> WalkDirectoryBuilder {
+        self.native.walk_directory(path)
+    }
+
+    fn env_var(&self, name: &str) -> std::result::Result<String, std::env::VarError> {
+        self.native.env_var(name)
+    }
+
+    fn as_writable(&self) -> Option<&dyn WritableSystem> {
+        self.native.as_writable()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
+    fn dyn_clone(&self) -> Box<dyn System> {
+        Box::new(self.clone())
     }
 }
 

@@ -78,27 +78,61 @@ pub struct LoadedConfig {
 ///
 /// Without a configuration file, the defaults apply and `start` is the root.
 pub fn discover(start: &Path) -> Result<LoadedConfig> {
+    match nearest(start)? {
+        Some(found) => loaded(found.section.as_ref(), &found.root, found.source),
+        None => Ok(LoadedConfig {
+            config: ThrowsConfig::default(),
+            root: start.to_path_buf(),
+            source: None,
+        }),
+    }
+}
+
+/// Like [`discover`], but returns `None` unless the nearest configuration file has a
+/// `[tool.tuff.throws]` or `[throws]` section.
+pub fn discover_configured(start: &Path) -> Result<Option<LoadedConfig>> {
+    match nearest(start)? {
+        Some(Found {
+            section: Some(section),
+            root,
+            source,
+        }) => loaded(Some(&section), &root, source).map(Some),
+        _ => Ok(None),
+    }
+}
+
+struct Found {
+    section: Option<toml::Value>,
+    root: PathBuf,
+    source: PathBuf,
+}
+
+fn nearest(start: &Path) -> Result<Option<Found>> {
     for directory in start.ancestors() {
         for name in ["tuff.toml", ".tuff.toml"] {
             let path = directory.join(name);
             if path.is_file() {
-                let table = read_table(&path)?;
-                return loaded(table.get("throws"), directory, path);
+                let mut table = read_table(&path)?;
+                return Ok(Some(Found {
+                    section: table.remove("throws"),
+                    root: directory.to_path_buf(),
+                    source: path,
+                }));
             }
         }
         let path = directory.join("pyproject.toml");
         if path.is_file() {
             let table = read_table(&path)?;
             if let Some(tuff) = table.get("tool").and_then(|tool| tool.get("tuff")) {
-                return loaded(tuff.get("throws"), directory, path);
+                return Ok(Some(Found {
+                    section: tuff.get("throws").cloned(),
+                    root: directory.to_path_buf(),
+                    source: path,
+                }));
             }
         }
     }
-    Ok(LoadedConfig {
-        config: ThrowsConfig::default(),
-        root: start.to_path_buf(),
-        source: None,
-    })
+    Ok(None)
 }
 
 fn read_table(path: &Path) -> Result<toml::Table> {
@@ -264,6 +298,27 @@ mod tests {
         std::fs::write(dir.path().join("tuff.toml"), "line-length = 100\n").unwrap();
         let loaded = discover(dir.path()).unwrap();
         assert_eq!(loaded.config, ThrowsConfig::default());
+    }
+
+    #[test]
+    fn discover_configured_requires_throws_section() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[tool.tuff.throws]\ntrack = [\"Outer\"]\n",
+        )
+        .unwrap();
+        let inner = dir.path().join("inner");
+        std::fs::create_dir(&inner).unwrap();
+        std::fs::write(inner.join("tuff.toml"), "line-length = 100\n").unwrap();
+
+        assert!(discover_configured(&inner).unwrap().is_none());
+        let outer = discover_configured(dir.path()).unwrap().unwrap();
+        assert_eq!(outer.config.track, ["Outer"]);
+        assert_eq!(outer.root, dir.path());
+
+        let unconfigured = tempfile::tempdir().unwrap();
+        assert!(discover_configured(unconfigured.path()).unwrap().is_none());
     }
 
     #[test]

@@ -1,8 +1,10 @@
 //! `tuff throws inspect`: the exceptions a function can raise and where each comes from.
 
 use std::fmt::Write as _;
+use std::path::PathBuf;
 
 use anyhow::{Result, bail};
+use ruff_text_size::TextRange;
 use serde::Serialize;
 
 use crate::extract::RaiseKind;
@@ -14,6 +16,12 @@ use crate::hierarchy::ExceptionId;
 pub struct ChainStep {
     pub function: String,
     pub location: Location,
+    /// Absolute path of the file containing the step.
+    #[serde(skip)]
+    pub path: PathBuf,
+    /// The `raise` statement, the call, or the declaring function's name.
+    #[serde(skip)]
+    pub range: TextRange,
     pub action: String,
 }
 
@@ -60,7 +68,7 @@ pub fn inspect(
         .collect())
 }
 
-fn inspect_function(
+pub(crate) fn inspect_function(
     analysis: &Analysis,
     function: FunctionId,
     track: &[String],
@@ -104,7 +112,7 @@ pub fn chain(analysis: &Analysis, function: FunctionId, exception: ExceptionId) 
         .map(|step| {
             let facts = analysis.facts(step.function);
             let file = analysis.file(step.function);
-            let (offset, action) = match step.kind {
+            let (range, action) = match step.kind {
                 StepKind::Raise { range } => {
                     let action = match facts
                         .raises
@@ -117,7 +125,7 @@ pub fn chain(analysis: &Analysis, function: FunctionId, exception: ExceptionId) 
                         }
                         _ => format!("raises `{name}`"),
                     };
-                    (range.start(), action)
+                    (range, action)
                 }
                 StepKind::Call { range, .. } => {
                     let callee = facts
@@ -125,20 +133,21 @@ pub fn chain(analysis: &Analysis, function: FunctionId, exception: ExceptionId) 
                         .iter()
                         .find(|call| call.range == range)
                         .map_or("?", |call| call.callee.as_str());
-                    (range.start(), format!("calls `{callee}()`"))
+                    (range, format!("calls `{callee}()`"))
                 }
-                StepKind::Declared(ContractSource::Decorator) => (
-                    facts.name_range.start(),
-                    format!("declares `{name}` with @throws"),
-                ),
+                StepKind::Declared(ContractSource::Decorator) => {
+                    (facts.name_range, format!("declares `{name}` with @throws"))
+                }
                 StepKind::Declared(ContractSource::Docstring) => (
-                    facts.name_range.start(),
+                    facts.name_range,
                     format!("documents `{name}` in its docstring"),
                 ),
             };
             ChainStep {
                 function: facts.qualname.clone(),
-                location: file.location(offset),
+                location: file.location(range.start()),
+                path: file.path.clone(),
+                range,
                 action,
             }
         })

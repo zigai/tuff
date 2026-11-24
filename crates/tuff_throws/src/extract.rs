@@ -76,8 +76,8 @@ pub struct RaiseSite {
 pub struct CallSite {
     /// Dotted source text of the callee, used for display and fallback resolution.
     pub callee: String,
-    /// Offset of the callee's name (`fetch` in `client.fetch()`), used for call resolution.
-    pub callee_offset: TextSize,
+    /// Range of the callee's name (`fetch` in `client.fetch()`), used for call resolution.
+    pub callee_range: TextRange,
     pub range: TextRange,
     /// Active guards, outermost first.
     pub guards: Vec<Guard>,
@@ -459,9 +459,9 @@ impl Collector<'_> {
 
     fn visit_call(&mut self, call: &ast::ExprCall) {
         let callee = dotted_name(&call.func);
-        let callee_offset = match call.func.as_ref() {
-            Expr::Attribute(attribute) => attribute.attr.start(),
-            func => func.start(),
+        let callee_range = match call.func.as_ref() {
+            Expr::Attribute(attribute) => attribute.attr.range(),
+            func => func.range(),
         };
         let callback_offsets = call
             .arguments
@@ -481,7 +481,7 @@ impl Collector<'_> {
                 callee: callee
                     .clone()
                     .unwrap_or_else(|| source[call.func.range()].to_string()),
-                callee_offset,
+                callee_range,
                 range: call.range(),
                 guards,
                 callback_offsets,

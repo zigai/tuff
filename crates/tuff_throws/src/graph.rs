@@ -44,6 +44,14 @@ pub struct AnalyzedFile {
 }
 
 impl AnalyzedFile {
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    pub fn line_index(&self) -> &LineIndex {
+        &self.line_index
+    }
+
     pub fn location(&self, offset: TextSize) -> Location {
         let line_column = self.line_index.line_column(offset, &self.source);
         Location {
@@ -84,6 +92,8 @@ impl std::fmt::Display for Location {
 #[derive(Debug)]
 pub struct FunctionNode {
     pub file: FileId,
+    /// Index into [`Analysis::files`].
+    pub(crate) position: usize,
     /// Index into the file's [`ModuleFacts::functions`].
     pub index: usize,
     /// `module.qualname`, or `path::qualname` for files outside any module.
@@ -272,7 +282,7 @@ impl Analysis {
     }
 
     pub fn file(&self, function: FunctionId) -> &AnalyzedFile {
-        &self.files[self.functions[function.index()].file.index()]
+        &self.files[self.functions[function.index()].position]
     }
 
     pub fn node(&self, function: FunctionId) -> &FunctionNode {
@@ -281,7 +291,7 @@ impl Analysis {
 
     pub fn facts(&self, function: FunctionId) -> &FunctionFacts {
         let node = self.node(function);
-        &self.files[node.file.index()].facts.functions[node.index]
+        &self.files[node.position].facts.functions[node.index]
     }
 
     pub fn result(&self, function: FunctionId) -> &FunctionResult {
@@ -573,6 +583,7 @@ impl<'a> Builder<'a> {
                 builder.symbols.insert(symbol.clone(), id);
                 builder.functions.push(FunctionNode {
                     file: file_id,
+                    position,
                     index,
                     is_boundary: boundaries.matches(&file.relative_path, &symbol),
                     symbol,
@@ -582,10 +593,6 @@ impl<'a> Builder<'a> {
             }
         }
         Ok(builder)
-    }
-
-    fn position(&self, file: FileId) -> Option<usize> {
-        self.file_ids.binary_search(&file).ok()
     }
 
     fn build(mut self) -> Analysis {
@@ -656,10 +663,7 @@ impl<'a> Builder<'a> {
         }
         for id in 0..self.functions.len() {
             let node = &self.functions[id];
-            let Some(position) = self.position(node.file) else {
-                continue;
-            };
-            let file = &self.files[position];
+            let file = &self.files[node.position];
             let facts = &file.facts.functions[node.index];
             if let Some(class) = &facts.class
                 && let Some(name) = facts.qualname.rsplit('.').next()
@@ -679,9 +683,7 @@ impl<'a> Builder<'a> {
     fn resolve_function(&mut self, index: usize) -> ResolvedFunction {
         let node = &self.functions[index];
         let file_id = node.file;
-        let Some(position) = self.position(file_id) else {
-            return ResolvedFunction::default();
-        };
+        let position = node.position;
         let facts = self.files[position].facts.functions[node.index].clone();
 
         let handlers = facts
@@ -872,7 +874,7 @@ impl<'a> Builder<'a> {
         facts: &FunctionFacts,
         call: &CallSite,
     ) -> CallResolution {
-        let Some(targets) = self.project.call_targets(file, call.callee_offset) else {
+        let Some(targets) = self.project.call_targets(file, call.callee_range.start()) else {
             return self.resolve_call_statically(position, facts, call);
         };
         let mut functions = Vec::new();

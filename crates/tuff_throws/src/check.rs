@@ -2,8 +2,10 @@
 
 use std::fmt::Write as _;
 
+use std::path::PathBuf;
+
 use anyhow::Result;
-use ruff_text_size::{TextRange, TextSize};
+use ruff_text_size::TextRange;
 use rustc_hash::FxHashSet;
 use serde::Serialize;
 
@@ -50,6 +52,12 @@ pub struct Diagnostic {
     pub name: &'static str,
     pub message: String,
     pub location: Location,
+    /// Absolute path of the reported file.
+    #[serde(skip)]
+    pub path: PathBuf,
+    /// The reported `raise` statement, call, handler type, or function name.
+    #[serde(skip)]
+    pub range: TextRange,
     pub exception: String,
     pub chain: Vec<ChainStep>,
 }
@@ -173,14 +181,17 @@ impl Checker<'_> {
         function: FunctionId,
         code: Code,
         exception: ExceptionId,
-        at: TextSize,
+        range: TextRange,
         message: String,
     ) {
+        let file = self.analysis.file(function);
         diagnostics.push(Diagnostic {
             code,
             name: code.name(),
             message,
-            location: self.analysis.file(function).location(at),
+            location: file.location(range.start()),
+            path: file.path.clone(),
+            range,
             exception: self.analysis.hierarchy.name(exception).to_string(),
             // A redundant handler has no exception flow to explain.
             chain: if code == Code::RedundantExcept {
@@ -219,14 +230,7 @@ impl Checker<'_> {
                 self.analysis.hierarchy.display_name(exception),
                 facts.qualname
             );
-            self.push(
-                diagnostics,
-                function,
-                code,
-                exception,
-                origin.start(),
-                message,
-            );
+            self.push(diagnostics, function, code, exception, origin, message);
         }
     }
 
@@ -265,7 +269,7 @@ impl Checker<'_> {
                         "`{}` is never raised in the `try` block",
                         hierarchy.display_name(handled)
                     );
-                    self.push(diagnostics, function, code, handled, range.start(), message);
+                    self.push(diagnostics, function, code, handled, range, message);
                 }
             }
         }
@@ -297,14 +301,7 @@ impl Checker<'_> {
                 facts.qualname,
                 hierarchy.display_name(exception)
             );
-            self.push(
-                diagnostics,
-                function,
-                code,
-                exception,
-                origin.start(),
-                message,
-            );
+            self.push(diagnostics, function, code, exception, origin, message);
         }
     }
 
@@ -342,7 +339,7 @@ impl Checker<'_> {
                 function,
                 code,
                 exception,
-                facts.name_range.start(),
+                facts.name_range,
                 message,
             );
         }

@@ -6,6 +6,8 @@ use tuff_throws::check::{CheckOptions, Diagnostic, check, render_text as render_
 use tuff_throws::config::discover;
 use tuff_throws::graph::Analysis;
 use tuff_throws::inspect::{inspect, render_json, render_text};
+use tuff_throws::snapshot::ThrowsSnapshot;
+use tuff_throws::ty_adapter::Overrides;
 
 const ERRORS: &str = indoc! {"
     class DomainError(Exception):
@@ -875,4 +877,178 @@ fn inspect_output() {
     assert_eq!(whole_file.len(), 2);
 
     assert!(inspect(&analysis, "app/orders.py::missing", &[]).is_err());
+}
+
+#[test]
+fn excluded_files_do_not_shift_function_locations() {
+    let project = Project::new(
+        "exclude = [\"app/contracts.py\"]\n",
+        &[(
+            "app/core.py",
+            indoc! {"
+                from app.errors import NotFound
+
+
+                def load():
+                    raise NotFound()
+            "},
+        )],
+    );
+    let analysis = project.analyze();
+
+    let report = inspect(&analysis, "app/core.py::load", &[]).unwrap();
+    assert_eq!(report[0].location.to_string(), "app/core.py:4:5");
+    assert_eq!(
+        escaping(&analysis, "app/core.py::load"),
+        ["app.errors.NotFound"]
+    );
+}
+
+const LOAD_NOT_FOUND: &str = indoc! {"
+    from app.errors import NotFound
+
+
+    def load():
+        raise NotFound()
+"};
+
+#[test]
+fn overrides_replace_disk_contents() {
+    let project = Project::new(
+        "boundaries = [\"app.api.*\"]\n",
+        &[
+            ("app/core.py", LOAD_NOT_FOUND),
+            (
+                "app/api.py",
+                indoc! {"
+                    from app.core import load
+
+
+                    def handler():
+                        load()
+                "},
+            ),
+        ],
+    );
+    let root = project.dir.path();
+    let core = root.join("app/core.py");
+    let api = root.join("app/api.py");
+    let edited = indoc! {"
+        from app.errors import Invalid
+
+
+        def load():
+            value = 1
+            raise Invalid(value)
+    "};
+    let mut overrides = Overrides::default();
+    overrides.insert(core.clone(), edited.to_string());
+    // A buffer for a file that does not exist on disk is not part of the project.
+    overrides.insert(
+        root.join("app/unsaved.py"),
+        "def f():\n    raise ValueError()\n".to_string(),
+    );
+
+    let snapshot = ThrowsSnapshot::build(&discover(root).unwrap(), &overrides).unwrap();
+
+    assert_eq!(std::fs::read_to_string(&core).unwrap(), LOAD_NOT_FOUND);
+    assert_eq!(
+        escaping(snapshot.analysis(), "app/api.py::handler"),
+        ["app.errors.Invalid"]
+    );
+    assert!(snapshot.file(&root.join("app/unsaved.py")).is_none());
+
+    let diagnostics = snapshot.diagnostics_for_file(&api);
+    assert_eq!(
+        codes(diagnostics),
+        [(
+            "app/api.py:5:5".to_string(),
+            "THROWS001",
+            "app.errors.Invalid".to_string()
+        )]
+    );
+    let api_source = snapshot.file(&api).unwrap().source();
+    assert_eq!(&api_source[diagnostics[0].range], "load()");
+
+    let origin = diagnostics[0].chain.last().unwrap();
+    assert_eq!(origin.path, core);
+    let core_source = snapshot.file(&core).unwrap().source();
+    assert_eq!(&core_source[origin.range], "raise Invalid(value)");
+
+    assert!(snapshot.diagnostics_for_file(&core).is_empty());
+}
+
+#[test]
+fn hover_on_definitions_and_call_sites() {
+    let api_source = indoc! {"
+        from app.contracts import throws
+        from app.core import load
+        from app.errors import NotFound
+
+
+        @throws(NotFound)
+        def handler():
+            value = 1
+            return load()
+    "};
+    let project = Project::new(
+        "",
+        &[("app/core.py", LOAD_NOT_FOUND), ("app/api.py", api_source)],
+    );
+    let root = project.dir.path();
+    let api = root.join("app/api.py");
+    let snapshot = ThrowsSnapshot::build(&discover(root).unwrap(), &Overrides::default()).unwrap();
+    let offset = |needle: &str| {
+        let start = api_source.find(needle).unwrap() + 1;
+        ruff_text_size::TextSize::try_from(start).unwrap()
+    };
+
+    let definition = snapshot.hover_at_offset(&api, offset("handler")).unwrap();
+    assert_eq!(&api_source[definition.range], "handler");
+    let [target] = definition.targets.as_slice() else {
+        panic!("expected one hover target");
+    };
+    assert_eq!(target.function.function, "app/api.py::handler");
+    assert_eq!(
+        target.contract.as_deref(),
+        Some(["NotFound".to_string()].as_slice())
+    );
+    let [exception] = target.function.exceptions.as_slice() else {
+        panic!("expected one exception");
+    };
+    assert_eq!(exception.qualified_name, "app.errors.NotFound");
+    let steps: Vec<_> = exception
+        .chain
+        .iter()
+        .map(|step| {
+            (
+                step.function.as_str(),
+                step.location.to_string(),
+                step.action.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            ("handler", "app/api.py:9:12".to_string(), "calls `load()`"),
+            ("load", "app/core.py:5:5".to_string(), "raises `NotFound`"),
+        ]
+    );
+
+    let call = snapshot.hover_at_offset(&api, offset("load()")).unwrap();
+    assert_eq!(&api_source[call.range], "load");
+    let [target] = call.targets.as_slice() else {
+        panic!("expected one hover target");
+    };
+    assert_eq!(target.function.function, "app/core.py::load");
+    assert_eq!(target.contract, None);
+    assert_eq!(target.function.exceptions[0].name, "NotFound");
+
+    assert!(snapshot.hover_at_offset(&api, offset("value")).is_none());
+    assert!(
+        snapshot
+            .hover_at_offset(&root.join("app/missing.py"), offset("handler"))
+            .is_none()
+    );
 }
