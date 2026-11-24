@@ -5,7 +5,7 @@
 [![Rust](https://img.shields.io/badge/Rust-1.98+-blue?logo=rust&logoColor=white&labelColor=30363d)](Cargo.toml)
 [![license](https://img.shields.io/github/license/zigai/tuff?label=license&labelColor=30363d)](LICENSE)
 
-Tuff extends [Ruff](https://github.com/astral-sh/ruff) with configurable Python formatting, extra Rust and Python lint rules, and exception-flow analysis.
+Tuff extends [Ruff](https://github.com/astral-sh/ruff) with configurable Python formatting, built-in and custom lint rules, and exception-flow analysis.
 
 - **Custom formatting:** Align neighboring code blocks and control collection or one-line suite layout.
 - **Native lint rules:** Enable 59 opt-in Rust rules covering import boundaries, style, and spacing.
