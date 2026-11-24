@@ -13,6 +13,9 @@ use ruff_python_trivia::CommentRanges;
 use ruff_text_size::{Ranged, TextRange};
 use rustc_hash::FxHashMap;
 use serde::de::DeserializeOwned;
+use tuff_python_rules::{Plugins, PythonRules};
+
+use crate::config::LintOptions;
 
 pub mod builtin;
 pub mod config;
@@ -380,6 +383,7 @@ impl<'ast> SourceOrderVisitor<'ast> for Visitor<'_, 'ast, '_> {
 pub struct Settings {
     pub registry: Arc<Registry>,
     pub root: std::path::PathBuf,
+    pub python_rules: Option<Arc<PythonRules>>,
     fingerprint: String,
 }
 
@@ -395,22 +399,54 @@ impl Settings {
         Self {
             registry: Arc::clone(&REGISTRY),
             root,
+            python_rules: None,
             fingerprint: String::new(),
         }
     }
 
-    pub fn new(root: std::path::PathBuf, options: &BTreeMap<String, RuleOptions>) -> Result<Self> {
+    /// Builds the native registry and, when `plugin-dirs` is configured, loads Python rules
+    /// using `cache_dir` for their manifest.
+    pub fn new(root: std::path::PathBuf, lint: &LintOptions, cache_dir: &Path) -> Result<Self> {
         let definitions = builtin::definitions();
-        for name in options.keys() {
-            if !definitions.iter().any(|rule| rule.name == name) {
+        let plugins = lint
+            .plugin_config()
+            .map(|config| Plugins::load(&config, &root, cache_dir))
+            .transpose()?;
+        if let Some(plugins) = &plugins {
+            for name in plugins.names() {
+                if definitions.iter().any(|rule| rule.name == name)
+                    || matches!(name, "all" | "builtin" | "legacy")
+                {
+                    bail!(
+                        "Python rule `{name}` has the same name as a native Tuff rule or selector"
+                    );
+                }
+            }
+        }
+        let is_python_rule = |name: &str| {
+            plugins
+                .as_ref()
+                .is_some_and(|plugins| plugins.contains(name))
+        };
+        let options = &lint.rules;
+        let mut python_options = BTreeMap::new();
+        for (name, rule_options) in options {
+            if is_python_rule(name) {
+                python_options.insert(name.clone(), serde_json::to_value(rule_options)?);
+            } else if !definitions.iter().any(|rule| rule.name == name) {
                 bail!("unknown Tuff rule `{name}`");
             }
         }
+        let selection = lint.python_rule_selection(is_python_rule)?;
+        let python_rules = plugins.map(|plugins| {
+            Arc::new(plugins.activate(|name| selection.is_enabled(name), &python_options))
+        });
         let fingerprint = toml::to_string(options)?;
         let registry = Arc::new(Registry::new(definitions, options)?);
         Ok(Self {
             registry,
             root,
+            python_rules,
             fingerprint,
         })
     }
@@ -426,6 +462,10 @@ impl CacheKey for Settings {
     fn cache_key(&self, state: &mut CacheKeyHasher) {
         self.root.cache_key(state);
         self.fingerprint.cache_key(state);
+        self.python_rules
+            .as_ref()
+            .map(|rules| rules.fingerprint())
+            .cache_key(state);
         RULE_FINGERPRINT.cache_key(state);
         env!("CARGO_PKG_VERSION").cache_key(state);
     }

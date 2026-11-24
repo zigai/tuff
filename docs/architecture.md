@@ -5,6 +5,7 @@ Tuff is a Ruff fork with additional, opt-in lint and formatter behavior.
 - `crates/ruff` builds the `tuff` binary.
 - `crates/tuff_python_formatter` contains Tuff-specific formatter behavior.
 - `crates/tuff_lint` owns native Rust rules, shared facts, named suppression, and spacing decisions. `crates/tuff_lint_macros` generates Ruff registrations from rule metadata.
+- `crates/tuff_python_rules` runs repository-local Python rules from `plugin-dirs` in CPython worker processes. Tuff does not link against Python.
 - `crates/ruff_python_formatter` remains the upstream-compatible formatter reference.
 - Ruff parser, AST, trivia, source, diagnostics, cache storage, and generic formatter crates stay aligned with upstream. Workspace resolution also loads Tuff configuration.
 - Tuff defaults stay Ruff-compatible.
@@ -16,6 +17,7 @@ Tuff-owned code lives in:
 
 - `crates/tuff_python_formatter`
 - `crates/tuff_lint` and `crates/tuff_lint_macros`
+- `crates/tuff_python_rules`
 - `crates/ruff_linter/src/tuff.rs` and `rules/tuff.rs`
 - `crates/ruff_workspace/src/tuff.rs`
 - `crates/ruff/src/tuff`

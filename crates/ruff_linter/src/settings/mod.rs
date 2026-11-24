@@ -21,7 +21,9 @@ use crate::rules::{
     flake8_self, flake8_tidy_imports, flake8_type_checking, flake8_unused_arguments, isort, mccabe,
     pep8_naming, pycodestyle, pydoclint, pydocstyle, pyflakes, pylint, pyupgrade, ruff,
 };
-use crate::settings::types::{CompiledPerFileIgnoreList, ExtensionMapping, FilePatternSet};
+use crate::settings::types::{
+    CompiledPerFileIgnoreList, CompiledPerFileNameList, ExtensionMapping, FilePatternSet,
+};
 use crate::{RuleSelector, fs};
 
 use super::line_width::IndentWidth;
@@ -219,6 +221,7 @@ pub struct LinterSettings {
     pub tuff: tuff_lint::Settings,
     pub tuff_format: tuff_python_formatter::PyFormatOptions,
     pub per_file_ignores: CompiledPerFileIgnoreList,
+    pub tuff_per_file_ignores: CompiledPerFileNameList,
     pub fix_safety: FixSafetyTable,
 
     /// The non-path-resolved Python version specified by the `target-version` input option.
@@ -812,6 +815,7 @@ impl LinterSettings {
             namespace_packages: vec![],
 
             per_file_ignores: CompiledPerFileIgnoreList::default(),
+            tuff_per_file_ignores: CompiledPerFileNameList::default(),
             fix_safety: FixSafetyTable::default(),
 
             src: vec![fs::get_cwd().to_path_buf(), fs::get_cwd().join("src")],

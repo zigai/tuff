@@ -1171,3 +1171,374 @@ fn inherited_native_reenable_is_shared_by_lint_and_format() {
         .unwrap();
     assert_eq!(lint.status.code(), Some(0), "{}", stderr(&lint));
 }
+
+const PYTHON_RULES: &str = r#"
+import ast
+from tuff_rules import TuffRule
+
+
+class NoPrint(TuffRule):
+    name = "no-print"
+    source_patterns = ("print",)
+    node_kinds = ("Call",)
+
+    def check(self, tree, ctx):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and ctx.qualified_name(node.func) == "builtins.print":
+                ctx.report(node.func, "Use logging", [ctx.edit(node.func, ctx.options.get("to", "log"))])
+
+
+class CallNames(TuffRule):
+    name = "call-names"
+    include = ("names/**",)
+
+    def check(self, tree, ctx):
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                ctx.report(node.func, str(ctx.qualified_name(node.func)))
+"#;
+
+/// A project whose `rules/` directory holds [`PYTHON_RULES`] and whose interpreter
+/// records each start in `spawns.log`.
+fn python_rule_project(config: &str) -> tempfile::TempDir {
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.cache/config-tests");
+    fs::create_dir_all(&base).unwrap();
+    let directory = tempfile::tempdir_in(base).unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("rules")).unwrap();
+    fs::write(root.join("rules/rules.py"), PYTHON_RULES).unwrap();
+    let wrapper = root.join("python");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\necho started >> '{}'\nexec python3 \"$@\"\n",
+            root.join("spawns.log").display(),
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    fs::write(
+        root.join("pyproject.toml"),
+        format!(
+            "[tool.ruff.lint]\nselect = []\n[tool.tuff.lint]\nplugin-dirs = ['rules']\npython = './python'\n{config}"
+        ),
+    )
+    .unwrap();
+    directory
+}
+
+fn spawns(root: &std::path::Path) -> usize {
+    fs::read_to_string(root.join("spawns.log")).map_or(0, |log| log.lines().count())
+}
+
+fn json_check(root: &std::path::Path, args: &[&str]) -> (Option<i32>, serde_json::Value, String) {
+    let output = tuff()
+        .current_dir(root)
+        .args(["check", "--output-format", "json"])
+        .args(args)
+        .output()
+        .unwrap();
+    let reports = serde_json::from_slice(&output.stdout).unwrap_or(serde_json::Value::Null);
+    (output.status.code(), reports, stderr(&output))
+}
+
+fn codes_and_rows(reports: &serde_json::Value) -> Vec<(String, u64)> {
+    let mut rows: Vec<_> = reports
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|report| {
+            (
+                report["code"].as_str().unwrap_or("<none>").to_owned(),
+                report["location"]["row"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    rows.sort();
+    rows
+}
+
+#[cfg(unix)]
+#[test]
+fn python_rules_report_and_fix_with_tuff_ignore_comments() {
+    let directory = python_rule_project("[tool.tuff.lint.rules.no-print]\nto = 'emit'\n");
+    let root = directory.path();
+    fs::write(
+        root.join("app.py"),
+        "import builtins as b\nprint(1)\nb.print(2)\nprint(3)  # tuff: ignore[no-print]\n",
+    )
+    .unwrap();
+    let (status, reports, stderr) = json_check(root, &["--no-cache", "app.py"]);
+    assert_eq!(status, Some(1), "{stderr}");
+    assert_eq!(
+        codes_and_rows(&reports),
+        [("no-print".to_owned(), 2), ("no-print".to_owned(), 3)]
+    );
+    let (status, _, stderr) = json_check(root, &["--no-cache", "--fix", "app.py"]);
+    assert_eq!(status, Some(0), "{stderr}");
+    assert_eq!(
+        fs::read_to_string(root.join("app.py")).unwrap(),
+        "import builtins as b\nemit(1)\nemit(2)\nprint(3)  # tuff: ignore[no-print]\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn python_rules_resolve_aliased_imports() {
+    let directory = python_rule_project("");
+    let root = directory.path();
+    fs::create_dir(root.join("names")).unwrap();
+    fs::write(
+        root.join("names/calls.py"),
+        "import foo as bar\nimport os.path as osp\nfrom pkg import tool as t\n\nbar.baz()\nosp.join('a')\nt.run()\nlocal()\n",
+    )
+    .unwrap();
+    let (status, reports, stderr) = json_check(root, &["--no-cache", "names/calls.py"]);
+    assert_eq!(status, Some(1), "{stderr}");
+    let messages: Vec<_> = reports
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|report| report["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        messages,
+        ["foo.baz", "os.path.join", "pkg.tool.run", "None"]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn python_rules_follow_selection_and_per_file_ignores() {
+    let directory = python_rule_project(
+        "[tool.ruff.lint.per-file-ignores]\n'ignored.py' = ['no-print', 'F401']\n",
+    );
+    let root = directory.path();
+    for name in ["app.py", "ignored.py"] {
+        fs::write(root.join(name), "print(1)\n").unwrap();
+    }
+    let (status, reports, stderr) = json_check(root, &["--no-cache", "."]);
+    assert_eq!(status, Some(1), "{stderr}");
+    let files: Vec<_> = reports
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|report| report["filename"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert!(files[0].ends_with("app.py"), "{files:?}");
+
+    let pyproject = root.join("pyproject.toml");
+    let config = fs::read_to_string(&pyproject).unwrap();
+    fs::write(
+        &pyproject,
+        config.replace(
+            "python = './python'\n",
+            "python = './python'\ndisable = ['no-print']\n",
+        ),
+    )
+    .unwrap();
+    let (status, reports, stderr) = json_check(root, &["--no-cache", "."]);
+    assert_eq!(status, Some(0), "{stderr}");
+    assert_eq!(reports, serde_json::json!([]));
+}
+
+#[cfg(unix)]
+#[test]
+fn unknown_python_rule_names_are_rejected() {
+    let directory = python_rule_project("enable = ['no-such-rule']\n");
+    let root = directory.path();
+    fs::write(root.join("app.py"), "x = 1\n").unwrap();
+    let (status, _, stderr) = json_check(root, &["--no-cache", "app.py"]);
+    assert_eq!(status, Some(2));
+    assert!(
+        stderr.contains("unknown Tuff rule `no-such-rule`"),
+        "{stderr}"
+    );
+
+    let directory = python_rule_project("[tool.tuff.lint.rules.no-such-rule]\nvalue = 1\n");
+    let (status, _, stderr) = json_check(directory.path(), &["--no-cache", "."]);
+    assert_eq!(status, Some(2));
+    assert!(
+        stderr.contains("unknown Tuff rule `no-such-rule`"),
+        "{stderr}"
+    );
+
+    let directory = python_rule_project("");
+    let root = directory.path();
+    fs::write(
+        root.join("app.py"),
+        "x = 1  # tuff: ignore[no-print]\ny = 2  # tuff: ignore[no-such-rule]\n",
+    )
+    .unwrap();
+    let (status, reports, stderr) = json_check(root, &["--no-cache", "app.py"]);
+    assert_eq!(status, Some(1), "{stderr}");
+    let reports = reports.as_array().unwrap();
+    assert_eq!(reports.len(), 1, "{reports:?}");
+    assert_eq!(reports[0]["location"]["row"], 2);
+    assert!(
+        reports[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no-such-rule")
+    );
+}
+
+#[test]
+fn unknown_rule_names_without_plugins_are_rejected() {
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.cache/config-tests");
+    fs::create_dir_all(&base).unwrap();
+    let directory = tempfile::tempdir_in(base).unwrap();
+    fs::write(
+        directory.path().join("pyproject.toml"),
+        "[tool.tuff.lint]\ndisable = ['no-such-rule']\n",
+    )
+    .unwrap();
+    fs::write(directory.path().join("app.py"), "x = 1\n").unwrap();
+    let (status, _, stderr) = json_check(directory.path(), &["--no-cache", "app.py"]);
+    assert_eq!(status, Some(2));
+    assert!(
+        stderr.contains("unknown Tuff rule `no-such-rule`"),
+        "{stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cached_python_rule_runs_do_not_start_python() {
+    let directory = python_rule_project("");
+    let root = directory.path();
+    fs::write(root.join("clean.py"), "value = 1\n").unwrap();
+    fs::write(root.join("mentions.py"), "label = 'print'\n").unwrap();
+
+    // The first run starts Python only to read the manifest: neither file passes the
+    // `no-print` filters, and `call-names` only includes `names/`.
+    let (status, _, stderr) = json_check(root, &["."]);
+    assert_eq!(status, Some(0), "{stderr}");
+    assert_eq!(spawns(root), 1);
+
+    let (status, _, stderr) = json_check(root, &["."]);
+    assert_eq!(status, Some(0), "{stderr}");
+    assert_eq!(spawns(root), 1);
+
+    // Editing a rule invalidates the manifest and the cached results of unchanged files.
+    fs::write(
+        root.join("rules/rules.py"),
+        format!(
+            "{PYTHON_RULES}\n\nclass NoLabel(TuffRule):\n    name = 'no-label'\n    include = ('mentions.py',)\n\n    def check(self, tree, ctx):\n        ctx.report(tree.body[0], 'label')\n"
+        ),
+    )
+    .unwrap();
+    let (status, reports, stderr) = json_check(root, &["."]);
+    assert_eq!(status, Some(1), "{stderr}");
+    assert_eq!(codes_and_rows(&reports), [("no-label".to_owned(), 1)]);
+    assert!(spawns(root) > 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn watched_files_invalidate_cached_python_rule_results() {
+    let directory = python_rule_project("");
+    let root = directory.path();
+    fs::write(
+        root.join("rules/watch.py"),
+        r#"
+from tuff_rules import TuffRule
+
+
+class Watch(TuffRule):
+    name = "allowed-names"
+    watch_files = ("allowed.txt",)
+
+    def check(self, tree, ctx):
+        allowed = (ctx.root / "allowed.txt").read_text().split()
+        for statement in tree.body:
+            for target in getattr(statement, "targets", []):
+                if target.id not in allowed:
+                    ctx.report(target, f"`{target.id}` is not allowed")
+"#,
+    )
+    .unwrap();
+    fs::write(root.join("allowed.txt"), "value\n").unwrap();
+    fs::write(root.join("app.py"), "value = 1\n").unwrap();
+    let (status, _, stderr) = json_check(root, &["app.py"]);
+    assert_eq!(status, Some(0), "{stderr}");
+    let before = spawns(root);
+    let (status, _, stderr) = json_check(root, &["app.py"]);
+    assert_eq!(status, Some(0), "{stderr}");
+    assert_eq!(spawns(root), before);
+
+    fs::write(root.join("allowed.txt"), "other\n").unwrap();
+    let (status, reports, stderr) = json_check(root, &["app.py"]);
+    assert_eq!(status, Some(1), "{stderr}");
+    assert_eq!(codes_and_rows(&reports), [("allowed-names".to_owned(), 1)]);
+}
+
+#[cfg(unix)]
+#[test]
+fn python_rule_failures_are_reported() {
+    let directory = python_rule_project("");
+    let root = directory.path();
+    fs::write(
+        root.join("rules/broken.py"),
+        "from tuff_rules import TuffRule\n\nclass Broken(TuffRule):\n    name = 'broken-rule'\n\n    def check(self, tree, ctx):\n        raise RuntimeError('rule bug')\n",
+    )
+    .unwrap();
+    fs::write(root.join("app.py"), "x = 1\n").unwrap();
+    let output = tuff()
+        .current_dir(root)
+        .args(["check", "--no-cache", "app.py"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Python rule `broken-rule` failed")
+            && stdout.contains("RuntimeError: rule bug"),
+        "{stdout}"
+    );
+
+    fs::write(
+        root.join("rules/broken.py"),
+        "import missing_module_for_test\n",
+    )
+    .unwrap();
+    let output = tuff()
+        .current_dir(root)
+        .args(["check", "--no-cache", "app.py"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = stderr(&output);
+    assert!(
+        stderr.contains("failed to import") && stderr.contains("missing_module_for_test"),
+        "{stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn python_rule_names_must_not_shadow_other_rules() {
+    for (name, expected) in [
+        ("unused-import", "same name as a Ruff rule"),
+        ("forbidden-call", "same name as a native Tuff rule"),
+    ] {
+        let directory = python_rule_project("");
+        let root = directory.path();
+        fs::write(
+            root.join("rules/clash.py"),
+            format!(
+                "from tuff_rules import TuffRule\n\nclass Clash(TuffRule):\n    name = '{name}'\n"
+            ),
+        )
+        .unwrap();
+        fs::write(root.join("app.py"), "x = 1\n").unwrap();
+        let (status, _, stderr) = json_check(root, &["--no-cache", "app.py"]);
+        assert_eq!(status, Some(2));
+        assert!(stderr.contains(expected), "{stderr}");
+    }
+}

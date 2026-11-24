@@ -45,6 +45,7 @@ ruff_source_file = { version = "0.0.23", path = "crates/ruff_source_file" }
 tuff_python_formatter = { path = "crates/tuff_python_formatter" }
 tuff_lint = { path = "crates/tuff_lint" }
 tuff_lint_macros = { path = "crates/tuff_lint_macros" }
+tuff_python_rules = { path = "crates/tuff_python_rules" }
 ruff_ranged_value = { version = "0.0.23", path = "crates/ruff_ranged_value" }
 ruff_text_size = { version = "0.0.23", path = "crates/ruff_text_size" }
 ruff_unicode_names2 = { version = "0.0.23", path = "crates/ruff_unicode_names2" }
@@ -207,6 +208,7 @@ serde = { version = "1.0.197", default-features = false, features = ["derive", "
 serde-wasm-bindgen = { version = "0.6.4", default-features = false }
 serde_json = { version = "1.0.113", default-features = false, features = ["std"] }
 serde_test = { version = "1.0.152", default-features = false }
+sha2 = { version = "0.10.9", default-features = false }
 shellexpand = { version = "3.0.0", default-features = false, features = ["base-0", "tilde"] }
 similar = { version = "3.0.0", default-features = false, features = ["inline", "std", "text"] }
 smallvec = { version = "1.13.2", default-features = false, features = ["union", "const_generics", "const_new"] }

@@ -901,6 +901,49 @@ where
     }
 }
 
+/// Per-file ignores for rules outside Ruff's registry, which are identified by name.
+#[derive(Debug, Clone)]
+pub struct PerFileNames(PerFile<Vec<String>>);
+
+impl PerFileIgnore {
+    /// Moves the selectors for which `is_named` returns `true` into a [`PerFileNames`] entry
+    /// with the same pattern.
+    pub fn take_names(&mut self, is_named: impl Fn(&str) -> bool) -> Option<PerFileNames> {
+        let (named, selectors): (Vec<_>, Vec<_>) = std::mem::take(&mut self.0.data)
+            .into_iter()
+            .partition(|selector| is_named(selector.as_str()));
+        self.0.data = selectors;
+        (!named.is_empty()).then(|| {
+            PerFileNames(PerFile {
+                pattern: Arc::clone(&self.0.pattern),
+                data: named
+                    .iter()
+                    .map(|selector| selector.as_str().to_owned())
+                    .collect(),
+            })
+        })
+    }
+}
+
+#[derive(Debug, Clone, CacheKey, Default)]
+pub struct CompiledPerFileNameList(CompiledPerFileList<Vec<String>>);
+
+impl CompiledPerFileNameList {
+    pub fn resolve(per_file_names: Vec<PerFileNames>) -> Result<Self> {
+        Ok(Self(CompiledPerFileList::resolve(
+            per_file_names.into_iter().map(|names| names.0),
+        )?))
+    }
+
+    pub fn ignores(&self, path: &Path, name: &str) -> bool {
+        !self.0.inner.is_empty()
+            && self
+                .0
+                .iter_matches(path, "Adding per-file ignores")
+                .any(|names| names.iter().any(|ignored| ignored == name))
+    }
+}
+
 #[derive(Debug, Clone, CacheKey, Default)]
 pub struct CompiledPerFileIgnoreList(CompiledPerFileList<RuleSet>);
 

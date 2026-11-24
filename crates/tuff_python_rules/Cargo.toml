@@ -1,0 +1,32 @@
+[package]
+name = "tuff_python_rules"
+version = "0.0.0"
+publish = false
+authors = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
+
+[dependencies]
+ruff_python_ast = { workspace = true }
+ruff_python_trivia = { workspace = true }
+ruff_text_size = { workspace = true }
+anyhow = { workspace = true }
+globset = { workspace = true }
+log = { workspace = true }
+memchr = { workspace = true }
+rustc-hash = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+walkdir = { workspace = true }
+which = { workspace = true }
+
+[dev-dependencies]
+ruff_python_parser = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

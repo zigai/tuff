@@ -62,6 +62,10 @@ impl UnresolvedRuleSelector {
         Self::new(selector, ValueSource::Cli)
     }
 
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
     pub fn source(&self) -> &ValueSource {
         self.0.source()
     }

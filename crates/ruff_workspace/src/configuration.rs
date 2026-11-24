@@ -326,11 +326,26 @@ impl Configuration {
 
         let future_annotations = lint.future_annotations.unwrap_or_default();
 
+        let cache_directory = self
+            .cache_dir
+            .clone()
+            .unwrap_or_else(|| cache_dir(project_root));
+        let tuff = tuff_lint::Settings::new(
+            project_root.to_path_buf(),
+            &self.tuff.lint,
+            &cache_directory,
+        )?;
+        let mut per_file_ignores: Vec<PerFileIgnore> = lint
+            .per_file_ignores
+            .unwrap_or_default()
+            .into_iter()
+            .chain(lint.extend_per_file_ignores)
+            .collect();
+        let tuff_per_file_ignores =
+            crate::tuff::take_python_rule_ignores(&mut per_file_ignores, &tuff)?;
+
         Ok(Settings {
-            cache_dir: self
-                .cache_dir
-                .clone()
-                .unwrap_or_else(|| cache_dir(project_root)),
+            cache_dir: cache_directory,
             fix: self.fix.unwrap_or(false),
             fix_only: self.fix_only.unwrap_or(false),
             unsafe_fixes: self.unsafe_fixes.unwrap_or_default(),
@@ -365,7 +380,7 @@ impl Configuration {
 
             linter: LinterSettings {
                 rules,
-                tuff: tuff_lint::Settings::new(project_root.to_path_buf(), &self.tuff.lint.rules)?,
+                tuff,
                 tuff_format: formatter.to_tuff_format_options(ast::PySourceType::Python, "", None),
                 exclude: FilePatternSet::try_from_iter(lint.exclude.unwrap_or_default())?,
                 extension: self.extension.unwrap_or_default(),
@@ -386,13 +401,10 @@ impl Configuration {
                 tab_size: self.indent_width.unwrap_or_default(),
                 namespace_packages: self.namespace_packages.unwrap_or_default(),
                 per_file_ignores: CompiledPerFileIgnoreList::resolve(
-                    lint.per_file_ignores
-                        .unwrap_or_default()
-                        .into_iter()
-                        .chain(lint.extend_per_file_ignores)
-                        .collect(),
+                    per_file_ignores,
                     lint_preview,
                 )?,
+                tuff_per_file_ignores,
                 fix_safety: FixSafetyTable::from_rule_selectors(
                     &lint.extend_safe_fixes,
                     &lint.extend_unsafe_fixes,
@@ -532,13 +544,13 @@ impl Configuration {
             .get_or_insert_with(Vec::new)
             .extend(
                 tuff.lint
-                    .selected_codes()?
+                    .selected_codes()
                     .into_iter()
                     .map(|code| UnresolvedRuleSelector::new(code, source.clone())),
             );
         lint.common.ignore.get_or_insert_with(Vec::new).extend(
             tuff.lint
-                .ignored_codes()?
+                .ignored_codes()
                 .into_iter()
                 .map(|code| UnresolvedRuleSelector::new(code, source.clone())),
         );

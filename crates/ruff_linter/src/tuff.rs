@@ -1,14 +1,18 @@
 use std::path::Path;
 
-use ruff_db::diagnostic::{Annotation, Diagnostic, DiagnosticId, Severity, Span};
+use ruff_db::diagnostic::{
+    Annotation, Diagnostic, DiagnosticId, LintName, SecondaryCode, Severity, Span,
+};
+use ruff_diagnostics::{Edit, Fix};
 use ruff_python_ast::{ModModule, PythonVersion};
 use ruff_python_parser::Parsed;
 use ruff_python_trivia::CommentRanges;
 use ruff_source_file::LineRanges;
 use ruff_text_size::{Ranged, TextRange};
 use rustc_hash::FxHashMap;
-use tuff_lint::Context;
 use tuff_lint::builtin::spacing::{self, SpacingRule};
+use tuff_lint::{Context, NameResolver};
+use tuff_python_rules::CheckedFile;
 
 use crate::checkers::ast::{Checker, LintContext};
 use crate::registry::{Rule, RuleSet};
@@ -80,6 +84,7 @@ pub(crate) fn check(
     path: &Path,
     context: &LintContext<'_>,
 ) {
+    check_python_rules(checker, parsed, path, context);
     if !context.any_rule_enabled(tuff::NATIVE_RULES) {
         return;
     }
@@ -186,6 +191,70 @@ pub(crate) fn check(
     }
 }
 
+fn check_python_rules(
+    checker: &Checker<'_>,
+    parsed: &Parsed<ModModule>,
+    path: &Path,
+    context: &LintContext<'_>,
+) {
+    let settings = checker.settings();
+    let Some(rules) = &settings.tuff.python_rules else {
+        return;
+    };
+    // CPython cannot parse the cell-joined source of a notebook.
+    if !rules.has_active_rules() || checker.source_type.is_ipynb() {
+        return;
+    }
+    let semantic = checker.semantic();
+    let report = rules.check(&CheckedFile {
+        path,
+        source: checker.source(),
+        module: parsed.syntax(),
+        comments: checker.indexer().comment_ranges(),
+        qualified_name: &|expression| semantic.qualified_name(expression),
+        is_ignored: &|name| settings.tuff_per_file_ignores.ignores(path, name),
+    });
+    for failure in report.failures {
+        let message = match failure.rule {
+            Some(rule) => format!("Python rule `{rule}` failed: {}", failure.message),
+            None => format!("Python rules failed: {}", failure.message),
+        };
+        let mut diagnostic = Diagnostic::new(DiagnosticId::Panic, Severity::Error, message);
+        let mut annotation = Annotation::primary(
+            Span::from(context.source_file().clone()).with_range(TextRange::default()),
+        );
+        annotation.hide_snippet(true);
+        diagnostic.annotate(annotation);
+        context.push_diagnostic(diagnostic);
+    }
+    for finding in report.findings {
+        let mut diagnostic = Diagnostic::new(
+            DiagnosticId::Lint(LintName::of(finding.rule)),
+            Severity::Error,
+            finding.message,
+        );
+        let mut annotation = Annotation::primary(
+            Span::from(context.source_file().clone()).with_range(finding.range),
+        );
+        if finding.range == TextRange::default() {
+            annotation.hide_snippet(true);
+        }
+        diagnostic.annotate(annotation);
+        diagnostic.set_secondary_code(SecondaryCode::new(finding.rule.to_owned()));
+        let mut edits = finding.edits.into_iter().map(|edit| {
+            if edit.replacement.is_empty() {
+                Edit::range_deletion(edit.range)
+            } else {
+                Edit::range_replacement(edit.replacement, edit.range)
+            }
+        });
+        if let Some(first) = edits.next() {
+            diagnostic.set_fix(Fix::safe_edits(first, edits));
+        }
+        context.push_diagnostic(diagnostic);
+    }
+}
+
 pub(crate) fn report_unknown_rule(context: &LintContext<'_>, name: &str, range: TextRange) {
     report_error(
         context,
@@ -237,7 +306,7 @@ pub(crate) fn suppressions(
             }
             if let Some(selected) = resolve_name(name) {
                 rules.insert(name.clone(), selected);
-            } else {
+            } else if !is_python_rule(context.settings(), name) {
                 report_error(
                     context,
                     DiagnosticId::UnknownRule,
@@ -250,6 +319,14 @@ pub(crate) fn suppressions(
     Some(Suppressions { source, rules })
 }
 
+fn is_python_rule(settings: &LinterSettings, name: &str) -> bool {
+    settings
+        .tuff
+        .python_rules
+        .as_ref()
+        .is_some_and(|rules| rules.rule_name(name).is_some())
+}
+
 fn resolve_name(name: &str) -> Option<RuleSet> {
     Rule::from_name(name)
         .ok()
@@ -257,18 +334,25 @@ fn resolve_name(name: &str) -> Option<RuleSet> {
 }
 
 pub(crate) fn apply_suppressions(context: &mut LintContext<'_>, suppressions: &Suppressions) {
+    let python_rules = context.settings().tuff.python_rules.clone();
     context.as_mut_vec().retain(|diagnostic| {
-        let Some(name) = diagnostic.id().as_lint() else {
+        let (Some(name), Some(range)) = (diagnostic.id().as_lint(), diagnostic.range()) else {
             return true;
         };
-        let (Ok(rule), Some(range)) = (Rule::from_name(name.as_str()), diagnostic.range()) else {
-            return true;
-        };
-        !suppressions.source.suppresses(range, |name| {
-            suppressions
-                .rules
-                .get(name)
-                .is_some_and(|rules| rules.contains(rule))
-        })
+        if let Ok(rule) = Rule::from_name(name.as_str()) {
+            return !suppressions.source.suppresses(range, |name| {
+                suppressions
+                    .rules
+                    .get(name)
+                    .is_some_and(|rules| rules.contains(rule))
+            });
+        }
+        let is_python_rule = python_rules
+            .as_ref()
+            .is_some_and(|rules| rules.rule_name(name.as_str()).is_some());
+        !(is_python_rule
+            && suppressions
+                .source
+                .suppresses(range, |ignored| ignored == name.as_str()))
     });
 }

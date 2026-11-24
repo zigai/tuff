@@ -1,6 +1,8 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
+use ruff_linter::registry::Rule;
+use ruff_linter::settings::types::{CompiledPerFileNameList, PerFileIgnore};
 use serde::Deserialize;
 use toml::Value;
 use toml::map::Map;
@@ -27,6 +29,26 @@ pub(crate) fn custom_options(
         .lint
         .spacing_policy(&custom.blank_lines.rules, enabled)?;
     Ok(custom)
+}
+
+/// Moves Python rule names out of `per-file-ignores`, which otherwise only accepts Ruff
+/// selectors.
+pub(crate) fn take_python_rule_ignores(
+    per_file_ignores: &mut [PerFileIgnore],
+    settings: &tuff_lint::Settings,
+) -> Result<CompiledPerFileNameList> {
+    let Some(rules) = &settings.python_rules else {
+        return Ok(CompiledPerFileNameList::default());
+    };
+    if let Some(name) = rules.names().find(|name| Rule::from_name(name).is_ok()) {
+        bail!("Python rule `{name}` has the same name as a Ruff rule");
+    }
+    CompiledPerFileNameList::resolve(
+        per_file_ignores
+            .iter_mut()
+            .filter_map(|ignore| ignore.take_names(|name| rules.rule_name(name).is_some()))
+            .collect(),
+    )
 }
 
 fn apply_format_table(

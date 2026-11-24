@@ -3370,6 +3370,7 @@ dependencies = [
  "tuff_lint",
  "tuff_lint_macros",
  "tuff_python_formatter",
+ "tuff_python_rules",
  "typed-arena",
  "unicode-normalization",
  "unicode-width",
@@ -4643,6 +4644,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "toml 1.1.8+spec-1.1.0",
+ "tuff_python_rules",
  "walkdir",
 ]
 
@@ -4692,6 +4694,27 @@ dependencies = [
  "tracing",
  "tuff_lint",
  "unicode-width",
+]
+
+[[package]]
+name = "tuff_python_rules"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "globset",
+ "log",
+ "memchr",
+ "ruff_python_ast",
+ "ruff_python_parser",
+ "ruff_python_trivia",
+ "ruff_text_size",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "walkdir",
+ "which",
 ]
 
 [[package]]
