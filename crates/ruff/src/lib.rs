@@ -210,6 +210,7 @@ pub fn run_command(
         Command::Format(args) => format(args, global_options),
         Command::Server(args) => server(args),
         Command::Analyze(AnalyzeCommand::Graph(args)) => analyze_graph(args, global_options),
+        Command::Throws(args) => tuff::throws::throws(args),
     }
 }
 

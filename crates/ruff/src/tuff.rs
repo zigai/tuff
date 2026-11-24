@@ -4,3 +4,4 @@
 //! module so `commands` can stay close to upstream Ruff orchestration.
 
 pub(crate) mod format;
+pub(crate) mod throws;

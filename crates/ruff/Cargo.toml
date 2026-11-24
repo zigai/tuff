@@ -35,6 +35,7 @@ ruff_python_ast = { workspace = true }
 ruff_python_formatter = { workspace = true }
 tuff_python_formatter = { workspace = true }
 tuff_lint = { workspace = true }
+tuff_throws = { workspace = true }
 ruff_python_parser = { workspace = true, features = ["stacker"] }
 ruff_ranged_value = { workspace = true }
 ruff_server = { workspace = true }

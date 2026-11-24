@@ -46,6 +46,7 @@ tuff_python_formatter = { path = "crates/tuff_python_formatter" }
 tuff_lint = { path = "crates/tuff_lint" }
 tuff_lint_macros = { path = "crates/tuff_lint_macros" }
 tuff_python_rules = { path = "crates/tuff_python_rules" }
+tuff_throws = { path = "crates/tuff_throws" }
 ruff_ranged_value = { version = "0.0.23", path = "crates/ruff_ranged_value" }
 ruff_text_size = { version = "0.0.23", path = "crates/ruff_text_size" }
 ruff_unicode_names2 = { version = "0.0.23", path = "crates/ruff_unicode_names2" }

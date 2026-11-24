@@ -557,6 +557,7 @@ Commands:
   format   Run the Tuff formatter on the given files or directories
   server   Run the language server
   analyze  Run analysis over Python source code
+  throws   Analyze which exceptions functions can raise
   version  Display Tuff's version
   help     Print this message or the help of the given subcommand(s)
 

@@ -165,11 +165,58 @@ pub enum Command {
     /// Run analysis over Python source code.
     #[clap(subcommand)]
     Analyze(AnalyzeCommand),
+    /// Analyze which exceptions functions can raise.
+    #[clap(subcommand)]
+    Throws(ThrowsCommand),
     /// Display Tuff's version
     Version {
         #[arg(long, value_enum, default_value = "text")]
         output_format: HelpFormat,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ThrowsCommand {
+    /// Show the exceptions a function can raise and where each one comes from.
+    Inspect(ThrowsInspectCommand),
+    /// Report exception-flow problems.
+    Check(ThrowsCheckCommand),
+}
+
+#[derive(Clone, Debug, clap::Parser)]
+pub struct ThrowsInspectCommand {
+    /// Function to inspect: `path/to/file.py::Class.method`, `path/to/file.py` for every
+    /// function in the file, or `package.module.function`.
+    pub target: String,
+    /// Only show exceptions deriving from this class. Repeat to track several classes.
+    #[arg(long, value_name = "EXCEPTION")]
+    pub track: Vec<String>,
+    /// Maximum number of calls an exception may propagate through.
+    #[arg(long, value_name = "N")]
+    pub depth: Option<usize>,
+    /// Output format.
+    #[arg(long, value_enum, default_value = "text")]
+    pub format: HelpFormat,
+}
+
+#[derive(Clone, Debug, clap::Parser)]
+pub struct ThrowsCheckCommand {
+    /// Files or directories to report on [default: the whole project].
+    pub paths: Vec<PathBuf>,
+    /// Exception base class to track, replacing the configured `track`. Repeat to track
+    /// several classes.
+    #[arg(long, value_name = "EXCEPTION")]
+    pub track: Vec<String>,
+    /// File or symbol glob of functions that must not let tracked exceptions escape, added to
+    /// the configured `boundaries`.
+    #[arg(long, value_name = "GLOB")]
+    pub boundary: Vec<String>,
+    /// Only report on files changed relative to `HEAD`, including untracked files.
+    #[arg(long)]
+    pub diff: bool,
+    /// Output format.
+    #[arg(long, value_enum, default_value = "text")]
+    pub format: HelpFormat,
 }
 
 #[derive(Debug, Subcommand)]

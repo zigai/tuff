@@ -1,0 +1,102 @@
+---
+source: crates/tuff_throws/tests/analysis.rs
+expression: render_json(&report).unwrap()
+---
+[
+  {
+    "function": "app/orders.py::OrderService.run",
+    "symbol": "app.orders.OrderService.run",
+    "location": {
+      "path": "app/orders.py",
+      "line": 6,
+      "column": 9
+    },
+    "complete": true,
+    "exceptions": [
+      {
+        "name": "Invalid",
+        "qualified_name": "app.errors.Invalid",
+        "depth": 2,
+        "chain": [
+          {
+            "function": "OrderService.run",
+            "location": {
+              "path": "app/orders.py",
+              "line": 9,
+              "column": 9
+            },
+            "action": "calls `self.pay()`"
+          },
+          {
+            "function": "OrderService.pay",
+            "location": {
+              "path": "app/orders.py",
+              "line": 12,
+              "column": 9
+            },
+            "action": "calls `charge()`"
+          },
+          {
+            "function": "charge",
+            "location": {
+              "path": "app/payments.py",
+              "line": 6,
+              "column": 9
+            },
+            "action": "raises `Invalid`"
+          }
+        ]
+      },
+      {
+        "name": "NotFound",
+        "qualified_name": "app.errors.NotFound",
+        "depth": 0,
+        "chain": [
+          {
+            "function": "OrderService.run",
+            "location": {
+              "path": "app/orders.py",
+              "line": 8,
+              "column": 13
+            },
+            "action": "raises `NotFound`"
+          }
+        ]
+      },
+      {
+        "name": "OverflowError",
+        "qualified_name": "builtins.OverflowError",
+        "depth": 2,
+        "chain": [
+          {
+            "function": "OrderService.run",
+            "location": {
+              "path": "app/orders.py",
+              "line": 9,
+              "column": 9
+            },
+            "action": "calls `self.pay()`"
+          },
+          {
+            "function": "OrderService.pay",
+            "location": {
+              "path": "app/orders.py",
+              "line": 12,
+              "column": 9
+            },
+            "action": "calls `charge()`"
+          },
+          {
+            "function": "charge",
+            "location": {
+              "path": "app/payments.py",
+              "line": 8,
+              "column": 9
+            },
+            "action": "raises `OverflowError`"
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -1,0 +1,8 @@
+---
+source: crates/tuff_throws/tests/analysis.rs
+expression: "render_check(&diagnostics[..1])"
+---
+app/api.py:6:12: THROWS001 [unhandled-boundary-exception] `NotFound` escapes boundary `get_item` unhandled
+      get_item  app/api.py:6:12  calls `load()`
+    → load      app/repo.py:7:5  raises `NotFound`
+Found 1 exception-flow problem.

@@ -1,0 +1,18 @@
+---
+source: crates/tuff_throws/tests/analysis.rs
+expression: render_text(&report)
+---
+app/orders.py::OrderService.run (app/orders.py:6:9) raises 3 exceptions
+
+  Invalid (app.errors.Invalid)
+      OrderService.run  app/orders.py:9:9    calls `self.pay()`
+    → OrderService.pay  app/orders.py:12:9   calls `charge()`
+    → charge            app/payments.py:6:9  raises `Invalid`
+
+  NotFound (app.errors.NotFound)
+      OrderService.run  app/orders.py:8:13  raises `NotFound`
+
+  OverflowError
+      OrderService.run  app/orders.py:9:9    calls `self.pay()`
+    → OrderService.pay  app/orders.py:12:9   calls `charge()`
+    → charge            app/payments.py:8:9  raises `OverflowError`
