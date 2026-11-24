@@ -7,13 +7,14 @@ Tuff is a fork of [Ruff](https://github.com/astral-sh/ruff) that provides extra 
 With Rust and Cargo installed:
 
 ```sh
-cargo install --git https://github.com/zigai/pyfmt.git --locked --bin tuff ruff
+cargo install --git https://github.com/zigai/tuff.git --locked --bin tuff ruff
 ```
 
 ## Use
 
 ```sh
 tuff format .
+tuff check .
 ```
 
 ## Formatting options
@@ -38,3 +39,14 @@ Currently added formatting options:
 | `one-line-suites`          | Collapse simple suites onto one line.              |
 
 See [Custom formatting options](docs/custom-formatting-options.md) for examples.
+
+## Native lint rules
+
+`tuff check` runs Ruff's lint rules plus opt-in native `TUF` rules. Enable them by name:
+
+```toml
+[tool.tuff.lint]
+enable = ["require-subprocess-run-timeout", "respect-module-all"]
+```
+
+See [Native lint rules](docs/native-linting.md) for selectors, rule options, and `tuff: ignore` comments.

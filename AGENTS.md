@@ -4,15 +4,15 @@ This repository contains both Ruff (a Python linter and formatter) and ty (a Pyt
 
 ## Tuff Fork
 
-Tuff is this workspace's Python formatter fork. Keep Ruff's parser, AST, trivia, text-size, diagnostics, and generic `ruff_formatter` printer crates aligned with upstream Ruff wherever possible.
+Tuff is this workspace's Python formatter and linter fork. Keep Ruff's parser, AST, trivia, text-size, diagnostics, and generic `ruff_formatter` printer crates aligned with upstream Ruff wherever possible.
 
-Product-specific formatting behavior belongs in `crates/tuff_python_formatter`. The user-facing binary is `tuff`, built from the `crates/ruff` package.
+Product-specific formatting behavior belongs in `crates/tuff_python_formatter`. Native lint rules belong in `crates/tuff_lint` and register with `native_rule!`; `crates/tuff_lint_macros` generates their `TUF` codes and Ruff violation adapters. The user-facing binary is `tuff`, built from the `crates/ruff` package.
 
-Defaults must stay Ruff-compatible. Custom formatting behavior must be disabled unless explicitly enabled through `TuffCustomOptions` or `[tool.tuff]` configuration.
+Defaults must stay Ruff-compatible. Custom formatting behavior must be disabled unless explicitly enabled through `TuffCustomOptions` or `[tool.tuff]` configuration. Native lint rules stay opt-in through `[tool.tuff.lint]` or explicit `TUF` selectors. See `docs/native-linting.md`.
 
 See `docs/architecture.md` for the Tuff fork boundary, formatter flow, and upstream vendoring rules.
 
-The active formatter work includes:
+The active Tuff work includes:
 
 - default Ruff compatibility tests
 - grouped custom formatter options
@@ -22,6 +22,7 @@ The active formatter work includes:
 - function parameter alignment
 - list, dict, tuple, and set collection layout policy
 - the `tuff format` CLI
+- opt-in native lint rules and `tuff: ignore` comments for `tuff check`
 
 ## Before contributing
 
