@@ -49,4 +49,16 @@ See [Custom formatting options](docs/custom-formatting-options.md) for examples.
 enable = ["require-subprocess-run-timeout", "respect-module-all"]
 ```
 
-See [Native lint rules](docs/native-linting.md) for selectors, rule options, and `tuff: ignore` comments.
+See [Native lint rules](docs/native-linting.md) for selectors, rule options, policy rules, and `tuff: ignore` comments.
+
+## Python rules
+
+`tuff check` also runs lint rules written in Python from directories listed in `plugin-dirs`. See [Python rules](docs/python-rules.md).
+
+## Exception flow
+
+`tuff throws inspect` shows the exceptions a function can raise and where they come from. `tuff throws check` reports exceptions that escape boundaries or contracts. See [Exception flow](docs/throws.md).
+
+## Editors
+
+`tuff server` runs the language server with the same configuration as `tuff check`, including Python rules.

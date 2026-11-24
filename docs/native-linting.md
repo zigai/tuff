@@ -17,6 +17,98 @@ An active native rule replaces the overlapping Ruff checks declared in its metad
 
 Spacing policies own competing Ruff blank-line reports at the same gap, even when fixes are disabled. Unrelated blank-line reports remain available.
 
+For repository-local rules written in Python, see [Python rules](python-rules.md). For exception-flow checks, see [Exception flow](throws.md).
+
+## Policy rules
+
+Five rules ban configured symbols. Each takes a list of entries:
+
+| Rule                             | Option                 | Shorthand                      |
+| -------------------------------- | ---------------------- | ------------------------------ |
+| `forbidden-call` (`TUF001`)      | `forbidden_calls`      | `symbol\|message\|replacement` |
+| `forbidden-import` (`TUF002`)    | `forbidden_imports`    | `module\|message`              |
+| `forbidden-name` (`TUF003`)      | `forbidden_names`      | `kind:pattern\|message`        |
+| `forbidden-attribute` (`TUF029`) | `forbidden_attributes` | `receiver.attribute\|message`  |
+| `forbidden-raise` (`TUF030`)     | `forbidden_raises`     | `exception\|message`           |
+
+An entry is either a shorthand string or a table. Tables accept these keys in addition to the selector keys below:
+
+- `message`: replaces the default diagnostic message.
+- `replacement`: a dotted name added to the message as advice: `Use instead: <replacement>.`
+- `include`, `exclude`: path globs relative to the configuration root. `*` stays within one path segment, and a directory pattern such as `tests` covers every file below it.
+
+A later entry with the same selector replaces an earlier one.
+
+```toml
+[tool.tuff.lint]
+enable = ["forbidden-call", "forbidden-import", "forbidden-attribute", "forbidden-raise"]
+
+[tool.tuff.lint.rules.forbidden-call]
+forbidden_calls = [
+    "builtins.eval|Parse the input instead.",
+    { symbol = "time.sleep", in_async = true, replacement = "asyncio.sleep" },
+    { symbol = "subprocess.run", require_keywords = ["timeout"], forbid_keywords = ["shell"] },
+]
+
+[tool.tuff.lint.rules.forbidden-import]
+forbidden_imports = [
+    { module = "app.db", exclude = ["app/repositories"], message = "Use a repository." },
+    { module = "app.services", names = ["*_client"], message = "Inject the client." },
+]
+
+[tool.tuff.lint.rules.forbidden-attribute]
+forbidden_attributes = [
+    { attribute = "dict", calls_only = true, replacement = "model_dump" },
+    { qualified_prefix = "os.environ", exclude = ["app/settings.py"] },
+    { receiver = "request", attribute = "state", ignore_writes = true },
+]
+
+[tool.tuff.lint.rules.forbidden-raise]
+forbidden_raises = [
+    { exception = "HTTPException", exclude = ["app/api"], message = "Raise a domain error." },
+]
+```
+
+Selector keys per rule:
+
+- `forbidden_calls`: `symbol` is the qualified callable, matched through import aliases.
+    - `require_keywords` reports calls that omit a listed keyword argument. Calls that pass `**kwargs` satisfy it.
+    - `forbid_keywords` reports calls that pass a listed keyword argument.
+    - With either list, the entry reports only these keyword violations.
+- `forbidden_imports`: `module` bans the module and everything below it. `names` narrows the entry to `from module import name` of matching names, including star imports, from that exact module.
+- `forbidden_names`: `kind` is `any`, `variable`, `parameter`, `function`, `class`, `attribute`, `import`, or `alias`. `pattern` is a shell-style pattern.
+- `forbidden_attributes`: an entry needs `attribute` or `qualified_prefix`.
+    - `attribute` and `receiver` are shell-style patterns for the attribute name and the dotted receiver as written.
+    - `qualified_prefix` matches accesses whose resolved qualified name is at or below the prefix. Only the innermost access is reported.
+    - `calls_only` reports only method calls.
+    - `ignore_writes` skips assignments and `del` through the attribute.
+- `forbidden_raises`: `exception` is a shell-style pattern matched against the resolved qualified name and the name as written.
+
+`forbidden_calls` and `forbidden_raises` entries also accept two context filters:
+
+- `in_async`: `true` matches only inside `async def` bodies; `false` matches only outside them.
+- `decorators`: shell-style patterns. The entry matches only inside a function or class with a matching decorator, by written or resolved name.
+
+## Generic rules
+
+| Rule                                                  | Description                                                         | Options                          |
+| ----------------------------------------------------- | ------------------------------------------------------------------- | -------------------------------- |
+| `no-del-unused-argument` (`TUF024`)                   | Prefix unused arguments with `_` instead of `del`. Fixable.         | `excluded_path_parts`            |
+| `require-subprocess-run-timeout` (`TUF025`)           | Require a non-`None` `timeout` on `subprocess.run`.                 | none                             |
+| `require-typed-empty-container-assignment` (`TUF026`) | Annotate names assigned an empty list, dict, or set.                | none                             |
+| `respect-module-all` (`TUF027`)                       | Import only names a module exports through `__all__`.               | `source_roots`, `module_exports` |
+| `no-boilerplate-docstrings` (`TUF028`)                | Remove docstrings and argument entries that restate names. Fixable. | none                             |
+
+`no-del-unused-argument` skips test files and paths containing a part in `excluded_path_parts` (default `["tests", "benchmarks"]`).
+
+`respect-module-all` reads `__all__` from project modules found under `source_roots` (default `["."]`, relative to the configuration root). `module_exports` declares exports for other modules as `module=name1,name2`; these entries take precedence over project files. Relative imports, star imports, `conftest.py`, and test files are skipped.
+
+```toml
+[tool.tuff.lint.rules.respect-module-all]
+source_roots = ["src"]
+module_exports = ["vendor.client=Client,connect"]
+```
+
 ## Blank lines
 
 Selecting a spacing rule for linting also enables its formatting policy. Formatter-only selection does not enable lint diagnostics:
